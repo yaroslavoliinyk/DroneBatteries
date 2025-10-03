@@ -528,6 +528,10 @@ function SuppliersView({ state, refresh }) {
   const [classIds, setClassIds] = useState([]);
   const [typeIds, setTypeIds] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterClassId, setFilterClassId] = useState("");
+  const [filterTypeId, setFilterTypeId] = useState("");
+  const [supplierQuery, setSupplierQuery] = useState("");
 
   // inline edit state
   const [editingId, setEditingId] = useState(null);
@@ -544,6 +548,10 @@ function SuppliersView({ state, refresh }) {
     ? typeOptions.filter(t => classIds.includes(t.classId))
     : [];
 
+  const filteredTypeOptionsByFilter = filterClassId
+    ? typeOptions.filter(t => t.classId === filterClassId)
+    : typeOptions;
+
   // Keep selected typeIds consistent with chosen classes
   useEffect(() => {
     if (classIds.length === 0) {
@@ -553,6 +561,29 @@ function SuppliersView({ state, refresh }) {
     const allowed = new Set(typeOptions.filter(t => classIds.includes(t.classId)).map(t => t.id));
     setTypeIds(ids => ids.filter(id => allowed.has(id)));
   }, [classIds, typeOptions]);
+
+  const filteredSuppliers = useMemo(() => {
+    let rows = Array.isArray(state?.suppliers) ? state.suppliers : [];
+    if (filterClassId) {
+      rows = rows.filter(s => (s.classIds || []).includes(filterClassId));
+    }
+    if (filterTypeId) {
+      rows = rows.filter(s => (s.typeIds || []).includes(filterTypeId));
+    }
+    if (supplierQuery.trim()) {
+      const q = supplierQuery.trim().toLowerCase();
+      rows = rows.filter(s => (s.name || '').toLowerCase().includes(q) || (s.website || '').toLowerCase().includes(q));
+    }
+    return rows;
+  }, [state?.suppliers, filterClassId, filterTypeId, supplierQuery]);
+
+  const activeFilterChips = useMemo(() => {
+    const chips = [];
+    if (filterClassId) chips.push(`Клас: ${classOptions.find(c=>c.id===filterClassId)?.name || filterClassId}`);
+    if (filterTypeId) chips.push(`Вид: ${typeOptions.find(t=>t.id===filterTypeId)?.name || filterTypeId}`);
+    if (supplierQuery.trim()) chips.push(`Пошук: "${supplierQuery.trim()}"`);
+    return chips;
+  }, [filterClassId, filterTypeId, supplierQuery, classOptions, typeOptions]);
 
   function addLink() { setLinks(x => [...x, { id: Math.random().toString(36).slice(2), title: "", url: "" }]); }
   function updateLink(id, patch) { setLinks(x => x.map(l => l.id === id ? { ...l, ...patch } : l)); }
@@ -682,14 +713,60 @@ function SuppliersView({ state, refresh }) {
         title="Постачальники"
         icon={Package}
         right={(
-          <button
-            className="rounded-xl border px-4 py-2 flex items-center gap-2 hover:bg-gray-50"
-            onClick={() => setShowAdd(v => !v)}
-          >
-            <Plus className="w-4 h-4" /> {showAdd ? 'Сховати' : 'Додати постачальника'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+              onClick={() => setShowFilters(v => !v)}
+            >
+              <Filter className="w-4 h-4" /> Фільтри
+              {activeFilterChips.length > 0 && (
+                <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-gray-900 text-white">{activeFilterChips.length}</span>
+              )}
+            </button>
+            <button
+              className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center gap-2"
+              onClick={() => setShowAdd(v => !v)}
+            >
+              <Plus className="w-4 h-4" /> {showAdd ? 'Сховати' : 'Додати постачальника'}
+            </button>
+          </div>
         )}
       >
+        {showFilters && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Клас</div>
+                <Select value={filterClassId} onChange={(v) => { setFilterClassId(v); setFilterTypeId(""); }}>
+                  <option value="">Всі</option>
+                  {classOptions.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Вид</div>
+                <Select value={filterTypeId} onChange={setFilterTypeId}>
+                  <option value="">{filterClassId ? 'Всі в класі' : '— спочатку оберіть клас'}</option>
+                  {filteredTypeOptionsByFilter.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Пошук</div>
+                <TextInput value={supplierQuery} onChange={setSupplierQuery} placeholder="назва або сайт" />
+              </div>
+            </div>
+            {activeFilterChips.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {activeFilterChips.map((txt, i) => (<Tag key={txt + i}>{txt}</Tag>))}
+              </div>
+            )}
+            <div>
+              <button
+                className="rounded-xl border px-4 py-2 hover:bg-gray-50"
+                onClick={() => { setFilterClassId(""); setFilterTypeId(""); setSupplierQuery(""); }}
+              >Скинути</button>
+            </div>
+          </div>
+        )}
         {showAdd && (
           <div className="grid gap-3">
             <div className="grid md:grid-cols-3 gap-3">
@@ -714,10 +791,17 @@ function SuppliersView({ state, refresh }) {
                 <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
                 <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
                   {classOptions.map(c => (
-                    <label key={c.id} className="flex items-center gap-2 text-sm">
-                      <input type="checkbox" className="scale-110" checked={classIds.includes(c.id)} onChange={(e)=> setClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
+                    <button
+                      key={c.id}
+                      className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const checked = !classIds.includes(c.id);
+                        setClassIds(x => checked ? [...x, c.id] : x.filter(id => id !== c.id));
+                      }}
+                    >
                       {c.name}
-                    </label>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -728,10 +812,17 @@ function SuppliersView({ state, refresh }) {
                 ) : (
                   <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
                     {filteredTypeOptionsForAdd.map(t => (
-                      <label key={t.id} className="flex items-center gap-2 text-sm">
-                        <input type="checkbox" className="scale-110" checked={typeIds.includes(t.id)} onChange={(e)=> setTypeIds(x => e.target.checked ? [...x, t.id] : x.filter(id=>id!==t.id)) } />
+                      <button
+                        key={t.id}
+                        className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          const checked = !typeIds.includes(t.id);
+                          setTypeIds(x => checked ? [...x, t.id] : x.filter(id => id !== t.id));
+                        }}
+                      >
                         {t.name}
-                      </label>
+                      </button>
                     ))}
                     {filteredTypeOptionsForAdd.length === 0 && (
                       <div className="text-xs text-gray-500">— для вибраних класів немає видів</div>
