@@ -195,19 +195,25 @@ function Stat({ label, value, icon: Icon }) {
   );
 }
 function Tag({ children }) { return <span className="px-2 py-0.5 rounded-full text-xs bg-gray-100 border">{children}</span>; }
-function Table({ columns, rows, empty = "Немає даних" }) {
+function Table({ columns, rows, empty = "Немає даних", fixed = false }) {
   return (
     <div className="overflow-x-auto border rounded-2xl bg-white">
-      <table className="min-w-full text-sm">
+      <table className={`min-w-full w-full text-sm ${fixed ? 'table-fixed' : ''}`}>
         <thead className="bg-gray-50">
-          <tr>{columns.map((c) => (<th key={c.key} className="text-left p-3 font-medium text-gray-700 border-b">{c.header}</th>))}</tr>
+          <tr>{columns.map((c) => (
+            <th key={c.key} className={`text-left p-3 font-medium text-gray-700 border-b ${c.thClass || ''}`}>{c.header}</th>
+          ))}</tr>
         </thead>
         <tbody>
           {rows.length === 0 ? (
             <tr><td className="p-4 text-center text-gray-500" colSpan={columns.length}>{empty}</td></tr>
           ) : rows.map((r, i) => (
             <tr key={r.id || i} className="odd:bg-white even:bg-gray-50">
-              {columns.map((c) => (<td key={c.key} className="p-3 border-b align-top">{typeof c.cell === 'function' ? c.cell(r) : r[c.key]}</td>))}
+              {columns.map((c) => (
+                <td key={c.key} className={`p-3 border-b align-top break-words whitespace-normal ${c.tdClass || ''}`}>
+                  {typeof c.cell === 'function' ? c.cell(r) : r[c.key]}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>
@@ -215,10 +221,10 @@ function Table({ columns, rows, empty = "Немає даних" }) {
     </div>
   );
 }
-function NumberInput({ value, onChange, min = 0, step = "any", placeholder }) {
-  return (<input type="number" className="w-full border rounded-xl px-3 py-2" value={value} onChange={(e) => onChange(e.target.value)} min={min} step={step} placeholder={placeholder} />);
+function NumberInput({ value, onChange, min = 0, step = "any", placeholder, className }) {
+  return (<input type="number" className={`${className || 'w-full'} border rounded-xl px-3 py-2`} value={value} onChange={(e) => onChange(e.target.value)} min={min} step={step} placeholder={placeholder} />);
 }
-function TextInput({ value, onChange, placeholder }) { return <input className="w-full border rounded-xl px-3 py-2" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />; }
+function TextInput({ value, onChange, placeholder, className }) { return <input className={`${className || 'w-full'} border rounded-xl px-3 py-2`} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />; }
 function Select({ value, onChange, children }) { return (<select className="w-full border rounded-xl px-3 py-2 bg-white" value={value} onChange={(e) => onChange(e.target.value)}>{children}</select>); }
 
 // ---------------------- Views (same UI, calls dispatch) ----------------------
@@ -342,6 +348,46 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   const [costAmount, setCostAmount] = useState("");
   const [costDescription, setCostDescription] = useState("");
 
+  // inline edit state for a single row
+  const [editingId, setEditingId] = useState(null);
+  const [editVendor, setEditVendor] = useState("");
+  const [editDate, setEditDate] = useState(todayISO());
+  const [editItems, setEditItems] = useState([]);
+  const [editCosts, setEditCosts] = useState([]);
+
+  function startEditRow(p) {
+    setEditingId(p.id);
+    setEditVendor(p.vendor || "");
+    setEditDate(p.date || todayISO());
+    setEditItems(p.items.map(it => ({ id: it.id, partTypeId: it.partTypeId, qty: Number(it.qty||0), unitCost: Number(it.unitCost||0) })));
+    setEditCosts((p.additionalCosts || []).map(c => ({ id: c.id, description: c.description || "", amount: Number(c.amount||0), date: c.date || todayISO() })));
+  }
+  async function saveEditRow() {
+    const id = editingId;
+    if (!id) return;
+    try {
+      await api.updatePurchase(id, { vendor: editVendor, date: editDate, items: editItems, additionalCosts: editCosts });
+      const s = await api.getState();
+      applyPartialState({ purchases: s.purchases, inventory: s.inventory, productStock: s.productStock });
+      setEditingId(null);
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+  function cancelEditRow() {
+    setEditingId(null);
+  }
+
+  function addCostRow() {
+    setEditCosts(x => [...x, { id: Math.random().toString(36).slice(2), description: "", amount: 0, date: todayISO() }]);
+  }
+  function updateCostRow(id, patch) {
+    setEditCosts(x => x.map(c => c.id === id ? { ...c, ...patch } : c));
+  }
+  function removeCostRow(id) {
+    setEditCosts(x => x.filter(c => c.id !== id));
+  }
+
   const partById = (id) => state.partTypes.find((p) => p.id === id);
 
   // Сума форми з урахуванням режиму ціни в кожному рядку
@@ -375,8 +421,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }
 
   const cols = [
-    { key: "date", header: "Дата" },
-    { key: "vendor", header: "Постачальник" },
+    { key: "date", header: "Дата", thClass: "w-28" },
+    { key: "vendor", header: "Постачальник", thClass: "w-64" },
     { key: "items", header: "Позиції", cell: (r) => {
       const additionalCosts = r.additionalCosts || [];
       const itemsTotal = r.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
@@ -392,26 +438,63 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             const share = itemsTotal > 0 ? (baseValue / itemsTotal) * costsTotal : 0;
             const effectiveUnit = Number(it.qty || 0) > 0 ? (Number(it.unitCost || 0) + share / Number(it.qty || 0)) : Number(it.unitCost || 0);
             const effectiveTotal = Number(it.qty || 0) * effectiveUnit;
+            const isEditing = editingId === r.id;
             return (
-              <div key={it.id}>
-                • <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}: {it.qty} × {currency(effectiveUnit)} = <b>{currency(effectiveTotal)}</b>
+              <div key={it.id} className="space-y-1">
+                <div>
+                  • <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}
+                </div>
+                {isEditing ? (
+                  <div className="flex items-center gap-2">
+                    <NumberInput
+                      className="w-20"
+                      value={(editItems.find(x=>x.id===it.id)||{}).qty ?? it.qty}
+                      onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, qty: Number(v) }: x))}
+                    />
+                    <span className="text-gray-500">×</span>
+                    <NumberInput
+                      className="w-20"
+                      value={(editItems.find(x=>x.id===it.id)||{}).unitCost ?? it.unitCost}
+                      onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, unitCost: Number(v) }: x))}
+                    />
+                    <span className="text-xs text-gray-500">= {currency(((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).qty) * ((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).unitCost + (share/( (editItems.find(x=>x.id===it.id)||{qty:it.qty}).qty || 1))))}</span>
+                  </div>
+                ) : (
+                  <div><span>{it.qty} × {currency(effectiveUnit)} = <b>{currency(effectiveTotal)}</b></span></div>
+                )}
               </div>
             );
           })}
-          {additionalCosts.length > 0 && !r.isService && (
-            <div className="mt-2 pt-2 border-t border-gray-200">
-              <div className="text-xs font-semibold text-gray-600 mb-1">Додаткові витрати:</div>
-              {additionalCosts.map((c) => (
-                <div key={c.id} className="text-blue-700">
-                  + {c.description}: <b>{currency(c.amount)}</b>
+          {!r.isService && (
+            <div className="mt-2 pt-2 border-t border-gray-200 space-y-2">
+              <div className="text-xs font-semibold text-gray-600">Додаткові витрати:</div>
+              {editingId === r.id ? (
+                <div className="space-y-2">
+                  {editCosts.map((c) => (
+                    <div key={c.id} className="space-y-1">
+                      <div className="text-sm text-gray-700">{c.description}</div>
+                      <div className="flex items-center gap-2">
+                        <NumberInput className="w-24" value={c.amount} onChange={(v)=>updateCostRow(c.id,{ amount: Number(v) })} placeholder="Сума" />
+                        <button className="p-2 rounded-lg hover:bg-gray-100" onClick={()=>removeCostRow(c.id)}><Trash2 className="w-4 h-4"/></button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              ) : (
+                additionalCosts.length > 0 && (
+                  <div className="space-y-1">
+                    {additionalCosts.map((c) => (
+                      <div key={c.id} className="text-blue-700">+ {c.description}: <b>{currency(c.amount)}</b></div>
+                    ))}
+                  </div>
+                )
+              )}
             </div>
           )}
         </div>
       );
     } },
-    { key: "total", header: "Сума" , cell: (r) => {
+    { key: "total", header: "Сума", thClass: "w-28", cell: (r) => {
       const itemsTotal = r.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
       const additionalCosts = r.additionalCosts || [];
       const costsTotal = additionalCosts.reduce((s, c) => s + Number(c.amount || 0), 0);
@@ -428,7 +511,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         </div>
       );
     }},
-    { key: "status", header: "Статус", cell: (r) => (
+    { key: "status", header: "Статус", thClass: "w-40", cell: (r) => (
       <div className="flex gap-2 items-center">
         {!r.isService && (r.delivered ? <Tag>Доставлено</Tag> : <Tag>В дорозі</Tag>)}
         {r.paidFromBalance ? <Tag>Оплачено</Tag> : <Tag>Не оплачено</Tag>}
@@ -437,7 +520,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         )}
       </div>
     ) },
-    { key: "actions", header: "Дії", cell: (r) => (
+    { key: "actions", header: "Дії", thClass: "w-64", cell: (r) => (
       <div className="flex flex-col gap-2">
         <div className="flex gap-2">
           {!r.isService && (
@@ -488,7 +571,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             <Info className="w-3 h-3 text-gray-500" />
           </span>
         </label>
-        {!r.isService && (
+        {!r.isService && editingId !== r.id && (
           <button
             className="px-3 py-1 rounded-xl border text-sm hover:bg-blue-50 border-blue-300 text-blue-700"
             onClick={() => setExpandedPurchase(expandedPurchase === r.id ? null : r.id)}
@@ -496,6 +579,39 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             {expandedPurchase === r.id ? '− Сховати' : '+ Додати витрати'}
           </button>
         )}
+        <div className="flex gap-2">
+              {editingId === r.id ? (
+            <div className="flex gap-2 flex-wrap">
+              <button
+                className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white"
+                onClick={saveEditRow}
+              >Зберегти</button>
+              <button
+                className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50"
+                onClick={cancelEditRow}
+              >Скасувати</button>
+            </div>
+          ) : (
+            <button
+              className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50"
+              onClick={() => startEditRow(r)}
+            >Редагувати</button>
+          )}
+          <button
+            className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
+            onClick={async () => {
+              if (!confirm('Видалити закупку? Дію не можна скасувати.')) return;
+              try {
+                await api.deletePurchase(r.id);
+                applyPartialState({ purchases: state.purchases.filter(p => p.id !== r.id) });
+                const s = await api.getState();
+                applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+              } catch (e) {
+                alert(String(e));
+              }
+            }}
+          >Видалити</button>
+        </div>
         {expandedPurchase === r.id && !r.isService && (
           <div className="mt-2 p-3 bg-blue-50 rounded-xl space-y-2">
             {r.paidFromBalance && (
@@ -657,7 +773,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       </Section>
 
       <Section title="Історія закупок" icon={ShoppingCart}>
-        <Table columns={cols} rows={state.purchases} empty="Ще не додано закупок" />
+        <Table columns={cols} rows={state.purchases} empty="Ще не додано закупок" fixed />
       </Section>
     </div>
   );

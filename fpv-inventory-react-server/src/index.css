@@ -3,3 +3,4 @@
 @tailwind utilities;
 
 html, body, #root { height: 100%; }
+/* keep default auto table layout to avoid squeezed columns */

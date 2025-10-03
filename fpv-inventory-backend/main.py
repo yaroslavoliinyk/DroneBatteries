@@ -342,6 +342,79 @@ async def add_purchase(p: Purchase):
     doc.pop("_id", None)
     return doc
 
+class UpdatePurchaseRequest(BaseModel):
+    date: Optional[str] = None
+    vendor: Optional[str] = None
+    items: Optional[List[PurchaseItem]] = None
+    additionalCosts: Optional[List[AdditionalCost]] = None
+    delivered: Optional[bool] = None
+    paidFromBalance: Optional[bool] = None
+    isService: Optional[bool] = None
+
+@app.put("/purchases/{purchase_id}")
+async def update_purchase(purchase_id: str, body: UpdatePurchaseRequest):
+    p = await c_purchases.find_one({"_id": purchase_id})
+    if not p:
+        raise HTTPException(404, "Purchase not found")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    # Recompute total if items or additionalCosts changed
+    if "items" in patch or "additionalCosts" in patch:
+        items = patch.get("items", p.get("items", []))
+        add_costs = patch.get("additionalCosts", p.get("additionalCosts", []))
+        items_total = sum([float(it.qty if isinstance(it, PurchaseItem) else it.get("qty", 0)) * float(it.unitCost if isinstance(it, PurchaseItem) else it.get("unitCost", 0)) for it in items])
+        costs_total = sum([float(c.amount if isinstance(c, AdditionalCost) else c.get("amount", 0)) for c in add_costs])
+        patch["total"] = items_total + costs_total
+        # Normalize embedded objects to dicts
+        def normalize_items(arr):
+            out = []
+            for it in arr:
+                if isinstance(it, PurchaseItem):
+                    d = it.model_dump()
+                else:
+                    d = dict(it)
+                if not d.get("id"):
+                    d["id"] = str(ObjectId())
+                out.append(d)
+            return out
+        if "items" in patch:
+            patch["items"] = normalize_items(items)
+        if "additionalCosts" in patch:
+            patch["additionalCosts"] = [
+                {"id": x.get("id") or str(ObjectId()), "amount": float(x.get("amount", 0)), "description": x.get("description", ""), "date": x.get("date") or now_iso()} for x in ( [c.model_dump() if isinstance(c, AdditionalCost) else c for c in add_costs] )
+            ]
+    await c_purchases.update_one({"_id": purchase_id}, {"$set": patch})
+    # Ensure consistency by rebuilding inventory/stock if impactful fields changed
+    if any(k in patch for k in ("items", "additionalCosts", "delivered", "isService")):
+        await rebuild_inventory_and_stock()
+    # Balance note: if paidFromBalance already true and total changed, we should adjust balance difference
+    if p.get("paidFromBalance") and "total" in patch:
+        diff = float(patch["total"]) - float(p.get("total", 0))
+        if abs(diff) > 1e-9:
+            be = {
+                "id": str(ObjectId()),
+                "_id": None,
+                "date": patch.get("date") or p.get("date") or now_iso(),
+                "type": "purchase",
+                "amount": diff,
+                "note": f"Корекція оплати закупки {p.get('vendor') or ''}",
+                "tag": "Покупка",
+                "refPurchaseId": purchase_id,
+            }
+            be["_id"] = be["id"]
+            await c_balance.insert_one(be)
+    return {"ok": True}
+
+@app.delete("/purchases/{purchase_id}")
+async def delete_purchase(purchase_id: str):
+    p = await c_purchases.find_one({"_id": purchase_id})
+    if not p:
+        raise HTTPException(404, "Purchase not found")
+    await c_purchases.delete_one({"_id": purchase_id})
+    # Also remove linked balance entries if any
+    await c_balance.delete_many({"refPurchaseId": purchase_id})
+    await rebuild_inventory_and_stock()
+    return {"ok": True}
+
 @app.post("/purchases/{purchase_id}/mark-delivered")
 async def mark_purchase_delivered(purchase_id: str):
     p = await c_purchases.find_one({"_id": purchase_id})
@@ -395,6 +468,7 @@ async def pay_purchase_from_balance(purchase_id: str):
         "amount": total,
         "note": f"Оплата закупки {p.get('vendor') or '(без постачальника)'}",
         "tag": "Покупка",
+        "refPurchaseId": purchase_id,
     }
     entry["_id"] = entry["id"]
     await c_balance.insert_one(entry)
@@ -445,6 +519,7 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
             "amount": float(req.amount),
             "note": f"Додаткові витрати ({req.description}) для закупки {p.get('vendor') or '(без постачальника)'}",
             "tag": "Покупка",
+            "refPurchaseId": purchase_id,
         }
         balance_entry["_id"] = balance_entry["id"]
         await c_balance.insert_one(balance_entry)
