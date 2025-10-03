@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw } from "lucide-react";
 import api from "./api";
 
 /**
@@ -667,7 +667,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     setEditingId(p.id);
     setEditVendor(p.vendor || "");
     setEditDate(p.date || todayISO());
-    setEditItems(p.items.map(it => ({ id: it.id, partTypeId: it.partTypeId, qty: Number(it.qty||0), unitCost: Number(it.unitCost||0) })));
+    setEditItems(p.items.map(it => ({ id: it.id, partTypeId: it.partTypeId, qty: Number(it.qty||0), unitCost: Number(it.unitCost||0), note: it.note || "" })));
     setEditCosts((p.additionalCosts || []).map(c => ({ id: c.id, description: c.description || "", amount: Number(c.amount||0), date: c.date || todayISO() })));
   }
   async function saveEditRow() {
@@ -892,7 +892,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         qty: 0,
         priceMode: "unit",  // "unit" | "total"
         unitCost: 0,        // використовується якщо priceMode === "unit"
-        totalCost: 0        // використовується якщо priceMode === "total"
+        totalCost: 0,       // використовується якщо priceMode === "total"
+        note: ""
       }
     ]);
   }
@@ -927,7 +928,6 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             <option value="">— Постачальник —</option>
             {(state.suppliers||[]).map(s => (<option key={s.id} value={s.name}>{s.name}</option>))}
           </select>
-          <button className="px-2 py-1 rounded-xl border text-xs hover:bg-gray-50" onClick={()=>{ setNewSupplierForPurchaseId(r.id); setShowNewSupplier(true); }}>Новий</button>
         </div>
       ) : (
         <button className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100" onClick={()=> setVendorQuery((r.vendor||"").trim())}>{r.vendor || "—"}</button>
@@ -977,6 +977,22 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       );
     } },
     { key: "note", header: "Нотатка", thClass: "w-[34%]", cell: (r) => {
+      const isEditing = editingId === r.id;
+      if (isEditing) {
+        return (
+          <div className="text-xs text-gray-700 space-y-2">
+            {(r.items || []).map((it) => (
+              <div key={it.id}>
+                <TextInput
+                  value={(editItems.find(x=>x.id===it.id)||{}).note ?? (it.note || "")}
+                  onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, note: v }: x))}
+                  placeholder="Нотатка (необов'язково)"
+                />
+              </div>
+            ))}
+          </div>
+        );
+      }
       const notes = (r.items || []).map(it => (it.note || '').trim()).filter(Boolean);
       if (notes.length === 0) return '—';
       return (
@@ -1197,13 +1213,14 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               <div className="overflow-x-auto border rounded-2xl bg-white">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-50">
-                    <tr>
+                  <tr>
                       <th className="p-2 text-left">Клас</th>
                       <th className="p-2 text-left">Деталь</th>
                       <th className="p-2 text-left">Кількість</th>
                       <th className="p-2 text-left">Тип ціни</th>
                       <th className="p-2 text-left">Ціна</th>
                       <th className="p-2 text-left">Сума</th>
+                    <th className="p-2 text-left">Нотатка</th>
                       <th className="p-2 text-left">—</th>
                     </tr>
                   </thead>
@@ -1256,6 +1273,13 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                           {row.priceMode === "unit"
                             ? currency(Number(row.qty || 0) * Number(row.unitCost || 0))
                             : currency(Number(row.totalCost || 0))}
+                        </td>
+                        <td className="p-2">
+                          <TextInput
+                            value={row.note || ""}
+                            onChange={(v) => updateRow(row.tempId, { note: v })}
+                            placeholder="Нотатка (необов'язково)"
+                          />
                         </td>
                         <td className="p-2">
                           <button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeRow(row.tempId)}>
@@ -1330,15 +1354,37 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
           title="Історія закупок"
         icon={ShoppingCart}
         right={(
-          <button
-            className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
-            onClick={() => setShowFilters((v) => !v)}
-          >
-            <Filter className="w-4 h-4" /> Фільтри
-            {activeFiltersCount > 0 && (
-              <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-gray-900 text-white">{activeFiltersCount}</span>
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+              onClick={() => setShowFilters((v) => !v)}
+            >
+              <Filter className="w-4 h-4" /> Фільтри
+              {activeFiltersCount > 0 && (
+                <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-gray-900 text-white">{activeFiltersCount}</span>
+              )}
+            </button>
+            <button
+              className="px-3 py-2 rounded-xl border flex items-center gap-2 bg-white hover:bg-gray-50"
+              title="Скинути фільтри"
+              onClick={() => {
+                setDeliveryFilter("all");
+                setPaymentFilter("all");
+                setServiceFilter("all");
+                setClassFilter("");
+                setTypeFilter("");
+                setDateFrom("");
+                setDateTo("");
+                setVendorQuery("");
+                setMinTotal("");
+                setMaxTotal("");
+                setSortBy("date");
+                setSortDir("desc");
+              }}
+            >
+              <RotateCcw className="w-4 h-4" /> Скинути
+            </button>
+          </div>
         )}
       >
         {showFilters && (
