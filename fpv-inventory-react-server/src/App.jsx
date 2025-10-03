@@ -515,12 +515,18 @@ function InventoryView({ state }) {
   const rows = Object.entries(state.inventory).map(([partTypeId, data]) => ({ id: partTypeId, partTypeId, ...data }));
 
   const cols = [
-    { key: "name", header: "Деталь", cell: (r) => (
-      <div>
-        <div className="font-medium">{partById(r.partTypeId)?.name || "?"}</div>
-        <div className="text-xs text-gray-500">Одиниця: {partById(r.partTypeId)?.unit || 'pcs'}</div>
-      </div>
-    ) },
+    { key: "name", header: "Деталь", cell: (r) => {
+      const part = partById(r.partTypeId);
+      const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
+      return (
+        <div>
+          <div className="font-medium">
+            <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}
+          </div>
+          <div className="text-xs text-gray-500">Одиниця: {part?.unit || 'pcs'}</div>
+        </div>
+      );
+    } },
     { key: "qty", header: "Кількість" },
     { key: "avgCost", header: "Сер. собівартість", cell: (r) => currency(r.avgCost) },
     { key: "total", header: "Сума", cell: (r) => currency(r.avgCost * r.qty) },
