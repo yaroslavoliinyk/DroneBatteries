@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, Battery, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, Battery, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter } from "lucide-react";
 import api from "./api";
 
 /**
@@ -132,22 +132,35 @@ export default function App() {
             <Battery className="w-6 h-6" />
             <div className="font-semibold">FPV Batteries – Склад (Mongo)</div>
           </div>
-          <nav className="flex gap-1 overflow-x-auto">
-            <TabBtn icon={Coins} id="balance" tab={tab} setTab={setTab}>Баланс</TabBtn>
-            <TabBtn icon={Package} id="parts" tab={tab} setTab={setTab}>Види деталей</TabBtn>
+          {/* moved primary navigation to left sidebar to reduce top clutter */}
+        </div>
+      </header>
+
+      <div className="max-w-[93.6rem] mx-auto p-4 grid md:grid-cols-[220px_1fr] gap-4">
+        <aside className="bg-white border rounded-2xl p-3 h-max sticky top-16">
+          <div className="text-xs uppercase text-gray-500 mb-2">Операції</div>
+          <div className="grid gap-1 mb-3">
             <TabBtn icon={ShoppingCart} id="purchases" tab={tab} setTab={setTab}>Закупки</TabBtn>
             <TabBtn icon={Warehouse} id="inventory" tab={tab} setTab={setTab}>Склад</TabBtn>
             <TabBtn icon={Boxes} id="products" tab={tab} setTab={setTab}>Продукти (BOM)</TabBtn>
             <TabBtn icon={Factory} id="assembly" tab={tab} setTab={setTab}>Збірка</TabBtn>
             <TabBtn icon={DollarSign} id="sales" tab={tab} setTab={setTab}>Продажі</TabBtn>
+          </div>
+          <div className="text-xs uppercase text-gray-500 mb-2">Довідники</div>
+          <div className="grid gap-1 mb-3">
+            <TabBtn icon={Package} id="parts" tab={tab} setTab={setTab}>Види деталей</TabBtn>
+            <TabBtn icon={Package} id="suppliers" tab={tab} setTab={setTab}>Постачальники</TabBtn>
+          </div>
+          <div className="text-xs uppercase text-gray-500 mb-2">Інше</div>
+          <div className="grid gap-1">
+            <TabBtn icon={Coins} id="balance" tab={tab} setTab={setTab}>Баланс</TabBtn>
             <TabBtn icon={Settings} id="settings" tab={tab} setTab={setTab}>Налаштування</TabBtn>
-          </nav>
         </div>
-      </header>
-
-      <main className="max-w-[93.6rem] mx-auto p-4 space-y-6">
+        </aside>
+        <main className="space-y-6">
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
-        {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
+          {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
+          {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
@@ -155,6 +168,7 @@ export default function App() {
         {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
         {tab === "settings" && <SettingsView state={state} dispatch={dispatch} serverMode/>}
       </main>
+      </div>
     </div>
   );
 }
@@ -221,6 +235,116 @@ function Table({ columns, rows, empty = "Немає даних", fixed = false }
     </div>
   );
 }
+function SuppliersView({ state, refresh }) {
+  const [name, setName] = useState("");
+  const [website, setWebsite] = useState("");
+  const [note, setNote] = useState("");
+  const [links, setLinks] = useState([]);
+  const [classIds, setClassIds] = useState([]);
+  const [typeIds, setTypeIds] = useState([]);
+
+  function addLink() { setLinks(x => [...x, { id: Math.random().toString(36).slice(2), title: "", url: "" }]); }
+  function updateLink(id, patch) { setLinks(x => x.map(l => l.id === id ? { ...l, ...patch } : l)); }
+  function removeLink(id) { setLinks(x => x.filter(l => l.id !== id)); }
+
+  const classOptions = state.partClasses;
+  const typeOptions = state.partTypes;
+
+  async function saveSupplier() {
+    if (!name.trim()) return;
+    try {
+      await api.addSupplier({ name, website, note, links, classIds, typeIds });
+      setName(""); setWebsite(""); setNote(""); setLinks([]); setClassIds([]); setTypeIds([]);
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  const cols = [
+    { key: "name", header: "Назва" },
+    { key: "website", header: "Вебсайт", cell: (s) => s.website ? (<a className="text-blue-700 underline" href={s.website} target="_blank" rel="noreferrer">{s.website}</a>) : "—" },
+    { key: "links", header: "Посилання", cell: (s) => (
+      <div className="text-sm text-gray-700 space-y-1">
+        {(s.links||[]).map(l => (
+          <div key={l.id}>• {l.title || 'Посилання'}: <a className="text-blue-700 underline" href={l.url} target="_blank" rel="noreferrer">{l.url}</a></div>
+        ))}
+      </div>
+    ) },
+    { key: "classes", header: "Класи", cell: (s) => (s.classIds||[]).map(id => classOptions.find(c=>c.id===id)?.name||id).join(', ') || '—' },
+    { key: "types", header: "Види", cell: (s) => (s.typeIds||[]).map(id => typeOptions.find(t=>t.id===id)?.name||id).join(', ') || '—' },
+    { key: "note", header: "Нотатка" },
+    { key: "actions", header: "—", thClass: "w-28", cell: (s) => (
+      <div className="flex gap-2">
+        <button
+          className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
+          onClick={async () => { if (!confirm('Видалити постачальника?')) return; await api.deleteSupplier(s.id); await refresh(); }}
+        >Видалити</button>
+      </div>
+    ) },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <Section title="Постачальники" icon={Package}>
+        <div className="grid gap-3">
+          <div className="grid md:grid-cols-3 gap-3">
+            <TextInput value={name} onChange={setName} placeholder="Назва" />
+            <TextInput value={website} onChange={setWebsite} placeholder="Вебсайт (https://...)" />
+            <TextInput value={note} onChange={setNote} placeholder="Нотатка" />
+          </div>
+          <div className="grid gap-2">
+            <div className="text-sm font-medium">Посилання</div>
+            {links.length === 0 && <div className="text-xs text-gray-500">Додайте посилання</div>}
+            {links.map(l => (
+              <div key={l.id} className="grid md:grid-cols-3 gap-2">
+                <TextInput value={l.title} onChange={(v)=>updateLink(l.id,{title:v})} placeholder="Назва (необов'язково)" />
+                <TextInput value={l.url} onChange={(v)=>updateLink(l.id,{url:v})} placeholder="URL" />
+                <button className="px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={()=>removeLink(l.id)}>Прибрати</button>
+              </div>
+            ))}
+            <button className="w-max px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={addLink}>+ Додати посилання</button>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
+              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
+                {classOptions.map(c => (
+                  <label key={c.id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" className="scale-110" checked={classIds.includes(c.id)} onChange={(e)=> setClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
+                    {c.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Види товарів</div>
+              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
+                {typeOptions.map(t => (
+                  <label key={t.id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" className="scale-110" checked={typeIds.includes(t.id)} onChange={(e)=> setTypeIds(x => e.target.checked ? [...x, t.id] : x.filter(id=>id!==t.id)) } />
+                    {t.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex">
+            <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={saveSupplier}><Save className="w-4 h-4"/> Зберегти постачальника</button>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Список постачальників" icon={Package}>
+        <Table columns={cols} rows={state.suppliers || []} empty="Постачальників ще немає" />
+      </Section>
+    </div>
+  );
+}
+function Card({ children }) { return <div className="p-4 rounded-2xl shadow bg-white border">{children}</div>; }
+function SectionTitle({ icon: Icon, children }) { return (
+  <h2 className="text-xl font-semibold flex items-center gap-2"><Icon className="w-5 h-5" /> {children}</h2>
+); }
 function NumberInput({ value, onChange, min = 0, step = "any", placeholder, className }) {
   return (<input type="number" className={`${className || 'w-full'} border rounded-xl px-3 py-2`} value={value} onChange={(e) => onChange(e.target.value)} min={min} step={step} placeholder={placeholder} />);
 }
@@ -347,6 +471,22 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   const [expandedPurchase, setExpandedPurchase] = useState(null);
   const [costAmount, setCostAmount] = useState("");
   const [costDescription, setCostDescription] = useState("");
+  // Filters & sorting
+  const [deliveryFilter, setDeliveryFilter] = useState("all"); // all | delivered | not_delivered
+  const [paymentFilter, setPaymentFilter] = useState("all");   // all | paid | not_paid
+  const [serviceFilter, setServiceFilter] = useState("all");   // all | services | goods
+  const [classFilter, setClassFilter] = useState("");          // classId | ""
+  const [typeFilter, setTypeFilter] = useState("");            // typeId | ""
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [sortBy, setSortBy] = useState("date");                // date | total | vendor
+  const [sortDir, setSortDir] = useState("desc");              // asc | desc
+  const [showFilters, setShowFilters] = useState(false);
+  const [vendorQuery, setVendorQuery] = useState("");
+  const [minTotal, setMinTotal] = useState("");
+  const [maxTotal, setMaxTotal] = useState("");
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 20;
 
   // inline edit state for a single row
   const [editingId, setEditingId] = useState(null);
@@ -389,6 +529,165 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }
 
   const partById = (id) => state.partTypes.find((p) => p.id === id);
+
+  function calcTotals(p) {
+    const itemsTotal = p.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
+    const additionalCosts = p.additionalCosts || [];
+    const costsTotal = additionalCosts.reduce((s, c) => s + Number(c.amount || 0), 0);
+    return { itemsTotal, costsTotal, total: itemsTotal + costsTotal };
+  }
+
+  const filteredPurchases = useMemo(() => {
+    let rows = state.purchases;
+
+    // Status filters (services are considered delivered for filtering purposes)
+    rows = rows.filter((r) => {
+      const deliveredForFilter = r.isService ? true : !!r.delivered;
+      if (deliveryFilter === "delivered" && !deliveredForFilter) return false;
+      if (deliveryFilter === "not_delivered" && deliveredForFilter) return false;
+      if (paymentFilter === "paid" && !r.paidFromBalance) return false;
+      if (paymentFilter === "not_paid" && r.paidFromBalance) return false;
+      if (serviceFilter === "services" && !r.isService) return false;
+      if (serviceFilter === "goods" && r.isService) return false;
+      return true;
+    });
+
+    // Date range
+    rows = rows.filter((r) => {
+      if (dateFrom && String(r.date) < dateFrom) return false;
+      if (dateTo && String(r.date) > dateTo) return false;
+      return true;
+    });
+
+    // Class / type filters (match if purchase contains at least one item from selected)
+    if (classFilter) {
+      rows = rows.filter((r) => r.items.some((it) => partById(it.partTypeId)?.classId === classFilter));
+    }
+    if (typeFilter) {
+      rows = rows.filter((r) => r.items.some((it) => it.partTypeId === typeFilter));
+    }
+
+    // Vendor search
+    if (vendorQuery.trim()) {
+      const q = vendorQuery.trim().toLowerCase();
+      rows = rows.filter((r) => (r.vendor || "").toLowerCase().includes(q));
+    }
+
+    // Total range
+    if (minTotal !== "" || maxTotal !== "") {
+      rows = rows.filter((r) => {
+        const t = calcTotals(r).total;
+        if (minTotal !== "" && t < Number(minTotal)) return false;
+        if (maxTotal !== "" && t > Number(maxTotal)) return false;
+        return true;
+      });
+    }
+
+    // Sorting
+    const dir = sortDir === "asc" ? 1 : -1;
+    const sorted = [...rows].sort((a, b) => {
+      if (sortBy === "date") {
+        const av = String(a.date || ""), bv = String(b.date || "");
+        return av === bv ? 0 : (av > bv ? 1 : -1) * dir;
+      }
+      if (sortBy === "vendor") {
+        const av = String(a.vendor || "").toLowerCase();
+        const bv = String(b.vendor || "").toLowerCase();
+        return av === bv ? 0 : (av > bv ? 1 : -1) * dir;
+      }
+      // total
+      const at = calcTotals(a).total;
+      const bt = calcTotals(b).total;
+      return at === bt ? 0 : (at > bt ? 1 : -1) * dir;
+    });
+    return sorted;
+  }, [state.purchases, deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
+
+  const activeFilters = useMemo(() => {
+    const chips = [];
+    if (deliveryFilter === "delivered") chips.push("Доставлені");
+    if (deliveryFilter === "not_delivered") chips.push("В дорозі");
+    if (paymentFilter === "paid") chips.push("Оплачені");
+    if (paymentFilter === "not_paid") chips.push("Не оплачені");
+    if (serviceFilter === "services") chips.push("Послуги");
+    if (serviceFilter === "goods") chips.push("Товари");
+    if (classFilter) {
+      const name = state.partClasses.find((c) => c.id === classFilter)?.name || classFilter;
+      chips.push(`Клас: ${name}`);
+    }
+    if (typeFilter) {
+      const name = state.partTypes.find((t) => t.id === typeFilter)?.name || typeFilter;
+      chips.push(`Вид: ${name}`);
+    }
+    if (dateFrom) chips.push(`З: ${dateFrom}`);
+    if (dateTo) chips.push(`По: ${dateTo}`);
+    if (vendorQuery.trim()) chips.push(`Постачальник: “${vendorQuery.trim()}”`);
+    if (minTotal !== "") chips.push(`Сума ≥ ${Number(minTotal).toFixed(2)}`);
+    if (maxTotal !== "") chips.push(`Сума ≤ ${Number(maxTotal).toFixed(2)}`);
+    return chips;
+  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, state.partClasses, state.partTypes]);
+  const activeFiltersCount = activeFilters.length;
+
+  // Reset page to 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
+
+  // URL sync (read on mount)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const get = (k, def) => params.get(k) ?? def;
+    setDeliveryFilter(get('df', 'all'));
+    setPaymentFilter(get('pf', 'all'));
+    setServiceFilter(get('sf', 'all'));
+    setClassFilter(get('cf', ''));
+    setTypeFilter(get('tf', ''));
+    setDateFrom(get('from', ''));
+    setDateTo(get('to', ''));
+    setSortBy(get('sb', 'date'));
+    setSortDir(get('sd', 'desc'));
+    setVendorQuery(get('vq', ''));
+    setMinTotal(get('min', ''));
+    setMaxTotal(get('max', ''));
+    setPage(Number(get('p', '1')) || 1);
+    const any = ['df','pf','sf','cf','tf','from','to','sb','sd','vq','min','max'].some(k => params.get(k));
+    if (any) setShowFilters(true);
+  }, []);
+
+  // URL sync (write on change)
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const setParam = (k, v, def) => {
+      if (v === undefined || v === null || v === '' || v === def) params.delete(k); else params.set(k, String(v));
+    };
+    setParam('df', deliveryFilter, 'all');
+    setParam('pf', paymentFilter, 'all');
+    setParam('sf', serviceFilter, 'all');
+    setParam('cf', classFilter, '');
+    setParam('tf', typeFilter, '');
+    setParam('from', dateFrom, '');
+    setParam('to', dateTo, '');
+    setParam('sb', sortBy, 'date');
+    setParam('sd', sortDir, 'desc');
+    setParam('vq', vendorQuery, '');
+    setParam('min', minTotal, '');
+    setParam('max', maxTotal, '');
+    setParam('p', page, '1');
+    const qs = params.toString();
+    const url = qs ? `${location.pathname}?${qs}` : location.pathname;
+    window.history.replaceState(null, '', url);
+  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, sortBy, sortDir, vendorQuery, minTotal, maxTotal, page]);
+
+  // Clamp page if filtered result shrinks
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filteredPurchases.length / PER_PAGE));
+    if (page > totalPages) setPage(totalPages);
+  }, [filteredPurchases.length]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredPurchases.length / PER_PAGE));
+  const pageStartIndex = filteredPurchases.length === 0 ? 0 : (page - 1) * PER_PAGE + 1;
+  const pageEndIndex = Math.min(filteredPurchases.length, page * PER_PAGE);
+  const pageRows = filteredPurchases.slice((page - 1) * PER_PAGE, (page - 1) * PER_PAGE + PER_PAGE);
 
   // Сума форми з урахуванням режиму ціни в кожному рядку
   const total = items.reduce((s, it) => {
@@ -772,8 +1071,183 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         )}
       </Section>
 
-      <Section title="Історія закупок" icon={ShoppingCart}>
-        <Table columns={cols} rows={state.purchases} empty="Ще не додано закупок" fixed />
+      <Section
+        title="Історія закупок"
+        icon={ShoppingCart}
+        right={(
+          <button
+            className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+            onClick={() => setShowFilters((v) => !v)}
+          >
+            <Filter className="w-4 h-4" /> Фільтри
+            {activeFiltersCount > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-gray-900 text-white">{activeFiltersCount}</span>
+            )}
+          </button>
+        )}
+      >
+        {showFilters && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Доставка</div>
+                <Select value={deliveryFilter} onChange={(v) => setDeliveryFilter(v)}>
+                  <option value="all">Всі</option>
+                  <option value="delivered">Лише доставлені</option>
+                  <option value="not_delivered">Лише в дорозі</option>
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Оплата</div>
+                <Select value={paymentFilter} onChange={(v) => setPaymentFilter(v)}>
+                  <option value="all">Всі</option>
+                  <option value="paid">Лише оплачені</option>
+                  <option value="not_paid">Лише не оплачені</option>
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Тип</div>
+                <Select value={serviceFilter} onChange={(v) => setServiceFilter(v)}>
+                  <option value="all">Всі</option>
+                  <option value="goods">Лише товари</option>
+                  <option value="services">Лише послуги</option>
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Клас</div>
+                <Select value={classFilter} onChange={(v) => { setClassFilter(v); setTypeFilter(""); }}>
+                  <option value="">Всі</option>
+                  {state.partClasses.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Вид</div>
+                <Select value={typeFilter} onChange={setTypeFilter}>
+                  <option value="">{classFilter ? 'Всі в класі' : '— спочатку оберіть клас'}</option>
+                  {state.partTypes
+                    .filter((t) => !classFilter || t.classId === classFilter)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-3 md:grid-cols-5 items-end">
+              <div className="grid grid-cols-2 gap-3 md:col-span-3">
+                <div>
+                  <div className="text-xs text-gray-500 mb-1">Дата з</div>
+                  <input type="date" className="w-full border rounded-xl px-3 py-2" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500 mb-1">Дата по</div>
+                  <input type="date" className="w-full border rounded-xl px-3 py-2" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Постачальник (пошук)</div>
+                <TextInput value={vendorQuery} onChange={setVendorQuery} placeholder="напр., AliExpress" />
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Сортувати за</div>
+                <Select value={sortBy} onChange={setSortBy}>
+                  <option value="date">Дата</option>
+                  <option value="total">Сума</option>
+                  <option value="vendor">Постачальник</option>
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Напрям</div>
+                <Select value={sortDir} onChange={setSortDir}>
+                  <option value="desc">За спаданням</option>
+                  <option value="asc">За зростанням</option>
+                </Select>
+              </div>
+
+            </div>
+            {activeFilters.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {activeFilters.map((txt, i) => (<Tag key={txt + i}>{txt}</Tag>))}
+              </div>
+            )}
+            <div className="grid gap-3 md:grid-cols-3 items-end">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Мін. сума</div>
+                <NumberInput value={minTotal} onChange={setMinTotal} min={0} placeholder="0" />
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Макс. сума</div>
+                <NumberInput value={maxTotal} onChange={setMaxTotal} min={0} placeholder="10000" />
+              </div>
+              <button
+                className="rounded-xl border px-4 py-2 hover:bg-gray-50 md:col-span-1"
+                onClick={() => {
+                  setDeliveryFilter("all");
+                  setPaymentFilter("all");
+                  setServiceFilter("all");
+                  setClassFilter("");
+                  setTypeFilter("");
+                  setDateFrom("");
+                  setDateTo("");
+                  setVendorQuery("");
+                  setMinTotal("");
+                  setMaxTotal("");
+                  setSortBy("date");
+                  setSortDir("desc");
+                }}
+              >Скинути</button>
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between mb-2 text-xs text-gray-500">
+          <div>
+            Знайдено: {filteredPurchases.length}
+            {filteredPurchases.length > 0 && (
+              <span> • Показано {pageStartIndex}–{pageEndIndex}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className={`px-2 py-1 rounded-lg border ${page <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page > 1 && setPage(page - 1)}
+              disabled={page <= 1}
+            >
+              ‹ Назад
+            </button>
+            <span className="px-2">Стор. {page} з {totalPages}</span>
+            <button
+              className={`px-2 py-1 rounded-lg border ${page >= totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page < totalPages && setPage(page + 1)}
+              disabled={page >= totalPages}
+            >
+              Вперед ›
+            </button>
+          </div>
+        </div>
+        <Table columns={cols} rows={pageRows} empty="Ще не додано закупок" fixed />
+        {totalPages > 1 && (
+          <div className="flex items-center justify-end mt-2 gap-1">
+            <button
+              className={`px-3 py-1 rounded-xl border text-sm ${page <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page > 1 && setPage(page - 1)}
+              disabled={page <= 1}
+            >
+              ‹ Назад
+            </button>
+            <span className="px-2 text-xs text-gray-500">Стор. {page} з {totalPages}</span>
+            <button
+              className={`px-3 py-1 rounded-xl border text-sm ${page >= totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page < totalPages && setPage(page + 1)}
+              disabled={page >= totalPages}
+            >
+              Вперед ›
+            </button>
+          </div>
+        )}
       </Section>
     </div>
   );

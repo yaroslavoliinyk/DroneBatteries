@@ -32,6 +32,11 @@ export const api = {
   assemble: (o) => http("POST", "/assembly", o),
   sale: (o) => http("POST", "/sales", o),
   rebuild: () => http("POST", "/maintenance/rebuild"),
+  // Suppliers
+  listSuppliers: () => http("GET", "/suppliers"),
+  addSupplier: (o) => http("POST", "/suppliers", o),
+  updateSupplier: (id, o) => http("PUT", `/suppliers/${id}`, o),
+  deleteSupplier: (id) => http("DELETE", `/suppliers/${id}`),
 };
 
 export default api;

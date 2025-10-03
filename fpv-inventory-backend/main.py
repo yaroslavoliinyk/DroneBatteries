@@ -37,6 +37,7 @@ c_products = db["products"]
 c_assemblies = db["assemblies"]
 c_product_stock = db["product_stock"]
 c_sales = db["sales"]
+c_suppliers = db["suppliers"]
 
 # --------- Helpers ---------
 def now_iso() -> str:
@@ -171,8 +172,9 @@ async def get_state() -> Dict[str, Any]:
     assemblies = [x async for x in c_assemblies.find().sort("date", -1)]
     product_stock = {doc["id"]: doc.get("qty", 0) async for doc in c_product_stock.find()}
     sales = [x async for x in c_sales.find().sort("date", -1)]
+    suppliers = [x async for x in c_suppliers.find().sort("name", 1)]
     # Remove Mongo _id
-    for arr in [balance_entries, part_classes, part_types, purchases, products, assemblies, sales]:
+    for arr in [balance_entries, part_classes, part_types, purchases, products, assemblies, sales, suppliers]:
         for doc in arr:
             doc.pop("_id", None)
     return {
@@ -185,6 +187,7 @@ async def get_state() -> Dict[str, Any]:
         "assemblies": assemblies,
         "productStock": product_stock,
         "sales": sales,
+        "suppliers": suppliers,
         "version": 1,
     }
 
@@ -244,6 +247,20 @@ class Product(BaseModel):
     bom: List[ProductBOMItem]
     note: Optional[str] = ""
     suggestedPrice: Optional[float] = None
+
+class SupplierLink(BaseModel):
+    id: Optional[str] = None
+    title: Optional[str] = ""
+    url: str
+
+class Supplier(BaseModel):
+    id: Optional[str] = None
+    name: str
+    website: Optional[str] = ""
+    links: Optional[List[SupplierLink]] = []
+    classIds: Optional[List[str]] = []
+    typeIds: Optional[List[str]] = []
+    note: Optional[str] = ""
 
 class Assembly(BaseModel):
     id: Optional[str] = None
@@ -586,6 +603,60 @@ async def add_product(p: Product):
         {"_id": doc["id"]}, {"$setOnInsert": {"id": doc["id"], "qty": 0}}, upsert=True
     )
     return doc
+# Suppliers
+@app.get("/suppliers")
+async def list_suppliers():
+    docs = [x async for x in c_suppliers.find().sort("name", 1)]
+    for d in docs: d.pop("_id", None)
+    return docs
+
+@app.post("/suppliers")
+async def add_supplier(s: Supplier):
+    doc = ensure_id(s.model_dump())
+    # ensure link ids
+    links = []
+    for l in (doc.get("links") or []):
+        d = dict(l)
+        if not d.get("id"):
+            d["id"] = str(ObjectId())
+        links.append(d)
+    doc["links"] = links
+    await c_suppliers.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+class UpdateSupplierRequest(BaseModel):
+    name: Optional[str] = None
+    website: Optional[str] = None
+    links: Optional[List[SupplierLink]] = None
+    classIds: Optional[List[str]] = None
+    typeIds: Optional[List[str]] = None
+    note: Optional[str] = None
+
+@app.put("/suppliers/{supplier_id}")
+async def update_supplier(supplier_id: str, body: UpdateSupplierRequest):
+    s = await c_suppliers.find_one({"_id": supplier_id})
+    if not s:
+        raise HTTPException(404, "Supplier not found")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "links" in patch:
+        norm = []
+        for l in patch["links"] or []:
+            d = l.model_dump() if isinstance(l, SupplierLink) else dict(l)
+            if not d.get("id"):
+                d["id"] = str(ObjectId())
+            norm.append(d)
+        patch["links"] = norm
+    await c_suppliers.update_one({"_id": supplier_id}, {"$set": patch})
+    return {"ok": True}
+
+@app.delete("/suppliers/{supplier_id}")
+async def delete_supplier(supplier_id: str):
+    s = await c_suppliers.find_one({"_id": supplier_id})
+    if not s:
+        raise HTTPException(404, "Supplier not found")
+    await c_suppliers.delete_one({"_id": supplier_id})
+    return {"ok": True}
 
 # Assembly
 class AssemblyRequest(BaseModel):
@@ -699,3 +770,4 @@ async def on_startup():
     await c_purchases.create_index("date")
     await c_sales.create_index([("date", -1)])
     await c_balance.create_index([("date", -1)])
+    await c_suppliers.create_index("name", unique=True)
