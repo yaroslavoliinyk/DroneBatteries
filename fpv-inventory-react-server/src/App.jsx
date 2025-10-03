@@ -255,7 +255,7 @@ export default function App() {
         <main className="space-y-6">
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
         {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
-          {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} />}
+        {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
@@ -520,7 +520,7 @@ function PartsView({ state, dispatch }) {
   );
 }
 
-function SuppliersView({ state, refresh }) {
+function SuppliersView({ state, refresh, applyPartialState }) {
   const [name, setName] = useState("");
   const [website, setWebsite] = useState("");
   const [note, setNote] = useState("");
@@ -532,6 +532,10 @@ function SuppliersView({ state, refresh }) {
   const [filterClassId, setFilterClassId] = useState("");
   const [filterTypeId, setFilterTypeId] = useState("");
   const [supplierQuery, setSupplierQuery] = useState("");
+  const [addClassId, setAddClassId] = useState("");
+  const [addTypeId, setAddTypeId] = useState("");
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 20;
 
   // inline edit state
   const [editingId, setEditingId] = useState(null);
@@ -547,6 +551,7 @@ function SuppliersView({ state, refresh }) {
   const filteredTypeOptionsForAdd = classIds.length > 0
     ? typeOptions.filter(t => classIds.includes(t.classId))
     : [];
+  const addTypeOptions = addClassId ? typeOptions.filter(t => t.classId === addClassId) : [];
 
   const filteredTypeOptionsByFilter = filterClassId
     ? typeOptions.filter(t => t.classId === filterClassId)
@@ -576,6 +581,22 @@ function SuppliersView({ state, refresh }) {
     }
     return rows;
   }, [state?.suppliers, filterClassId, filterTypeId, supplierQuery]);
+
+  // Sort latest added first using ObjectId timestamp heuristic
+  const filteredSuppliersSorted = useMemo(() => {
+    function oidTs(id) {
+      try { return parseInt(String(id).slice(0, 8), 16) || 0; } catch(_) { return 0; }
+    }
+    return [...filteredSuppliers].sort((a, b) => oidTs(b.id) - oidTs(a.id));
+  }, [filteredSuppliers]);
+
+  // Pagination
+  const totalPages = Math.max(1, Math.ceil(filteredSuppliersSorted.length / PER_PAGE));
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [totalPages]);
+  useEffect(() => { setPage(1); }, [filterClassId, filterTypeId, supplierQuery]);
+  const pageStartIndex = filteredSuppliersSorted.length === 0 ? 0 : (page - 1) * PER_PAGE + 1;
+  const pageEndIndex = Math.min(filteredSuppliersSorted.length, page * PER_PAGE);
+  const supplierPageRows = filteredSuppliersSorted.slice((page - 1) * PER_PAGE, (page - 1) * PER_PAGE + PER_PAGE);
 
   const activeFilterChips = useMemo(() => {
     const chips = [];
@@ -607,6 +628,17 @@ function SuppliersView({ state, refresh }) {
     const id = editingId;
     if (!id) return;
     try {
+      // optimistic update
+      applyPartialState({ suppliers: (state?.suppliers||[]).map(s => s.id === id ? {
+        ...s,
+        name: editName,
+        website: editWebsite,
+        note: editNote,
+        links: editLinks.map(l => ({ id: l.id, title: l.title || "", url: l.url || "" })),
+        classIds: [...editClassIds],
+        typeIds: [...editTypeIds],
+      } : s) });
+
       await api.updateSupplier(id, {
         name: editName,
         website: editWebsite,
@@ -616,8 +648,11 @@ function SuppliersView({ state, refresh }) {
         typeIds: editTypeIds,
       });
       setEditingId(null);
-      await refresh();
+      // background refresh
+      try { const s = await api.listSuppliers(); applyPartialState({ suppliers: s }); } catch(_){ }
     } catch (e) {
+      // on error - reload suppliers list as fallback
+      try { const s = await api.listSuppliers(); applyPartialState({ suppliers: s }); } catch(_){ }
       alert(String(e));
     }
   }
@@ -629,10 +664,15 @@ function SuppliersView({ state, refresh }) {
   async function saveSupplier() {
     if (!name.trim()) return;
     try {
-      await api.addSupplier({ name, website, note, links, classIds, typeIds });
+      const created = await api.addSupplier({ name, website, note, links, classIds, typeIds });
+      // Optimistically append to list
+      applyPartialState({ suppliers: [ ...(state?.suppliers || []), created ] });
+      // Reset form and close
       setName(""); setWebsite(""); setNote(""); setLinks([]); setClassIds([]); setTypeIds([]);
+      setAddClassId(""); setAddTypeId("");
       setShowAdd(false);
-      await refresh();
+      // Background refresh suppliers only
+      try { const list = await api.listSuppliers(); applyPartialState({ suppliers: list }); } catch(_) {}
     } catch (e) {
       alert(String(e));
     }
@@ -664,32 +704,7 @@ function SuppliersView({ state, refresh }) {
         ))}
       </div>
     ) },
-    { key: "classes", header: "Класи", cell: (s) => editingId === s.id ? (
-      <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-        {classOptions.map(c => (
-          <label key={c.id} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" className="scale-110" checked={editClassIds.includes(c.id)} onChange={(e)=> setEditClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
-            {c.name}
-          </label>
-        ))}
-      </div>
-    ) : (
-      <div className="flex flex-wrap gap-2">
-        {(s.classIds||[]).map(id => {
-          const cls = classOptions.find(c=>c.id===id);
-          const style = makeClassChipStyle(cls?.color);
-          return (
-            <button
-              key={id}
-              className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
-              style={style}
-              onClick={(e)=>{ e.preventDefault(); }}
-            >{cls?.name || id}</button>
-          );
-        })}
-        {(!s.classIds || s.classIds.length===0) && '—'}
-      </div>
-    ) },
+    // (Колонку "Класи" прибрано за вимогою)
     { key: "types", header: "Види", cell: (s) => editingId === s.id ? (
       <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
         {typeOptions.map(t => (
@@ -744,7 +759,18 @@ function SuppliersView({ state, refresh }) {
             <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> startEditSupplier(s)}>Редагувати</button>
             <button
               className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
-              onClick={async () => { if (!confirm('Видалити постачальника?')) return; await api.deleteSupplier(s.id); await refresh(); }}
+              onClick={async () => {
+                if (!confirm('Видалити постачальника?')) return;
+                // optimistic remove
+                applyPartialState({ suppliers: (state?.suppliers||[]).filter(x => x.id !== s.id) });
+                try {
+                  await api.deleteSupplier(s.id);
+                } catch (e) {
+                  // rollback on error
+                  try { const list = await api.listSuppliers(); applyPartialState({ suppliers: list }); } catch(_){ }
+                  alert(String(e));
+                }
+              }}
             >Видалити</button>
           </>
         )}
@@ -812,6 +838,31 @@ function SuppliersView({ state, refresh }) {
             </div>
           </div>
         )}
+        <div className="flex items-center justify-between mb-2 text-xs text-gray-500">
+          <div>
+            Знайдено: {filteredSuppliersSorted.length}
+            {filteredSuppliersSorted.length > 0 && (
+              <span> • Показано {pageStartIndex}–{pageEndIndex}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className={`px-2 py-1 rounded-lg border ${page <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page > 1 && setPage(page - 1)}
+              disabled={page <= 1}
+            >
+              ‹ Назад
+            </button>
+            <span className="px-2">Стор. {page} з {totalPages}</span>
+            <button
+              className={`px-2 py-1 rounded-lg border ${page >= totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page < totalPages && setPage(page + 1)}
+              disabled={page >= totalPages}
+            >
+              Вперед ›
+            </button>
+          </div>
+        </div>
         {showAdd && (
           <div className="grid gap-3">
             <div className="grid md:grid-cols-3 gap-3">
@@ -831,49 +882,50 @@ function SuppliersView({ state, refresh }) {
               ))}
               <button className="w-max px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={addLink}>+ Додати посилання</button>
             </div>
-            <div className="grid md:grid-cols-2 gap-3">
+            <div className="grid md:grid-cols-4 gap-3 items-end">
               <div>
-                <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
-                <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-                  {classOptions.map(c => (
-                    <button
-                      key={c.id}
-                      className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        const checked = !classIds.includes(c.id);
-                        setClassIds(x => checked ? [...x, c.id] : x.filter(id => id !== c.id));
-                      }}
-                    >
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
+                <div className="text-xs text-gray-500 mb-1">Клас товарів</div>
+                <Select value={addClassId} onChange={(v)=> { setAddClassId(v); setAddTypeId(""); }}>
+                  <option value="">— Оберіть клас —</option>
+                  {classOptions.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </Select>
               </div>
               <div>
-                <div className="text-xs text-gray-500 mb-1">Види товарів</div>
-                {classIds.length === 0 ? (
-                  <div className="text-xs text-gray-500 p-2 border rounded-xl bg-white">— спочатку оберіть клас(и)</div>
-                ) : (
-                  <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-                    {filteredTypeOptionsForAdd.map(t => (
-                      <button
-                        key={t.id}
-                        className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          const checked = !typeIds.includes(t.id);
-                          setTypeIds(x => checked ? [...x, t.id] : x.filter(id => id !== t.id));
-                        }}
-                      >
-                        {t.name}
-                      </button>
-                    ))}
-                    {filteredTypeOptionsForAdd.length === 0 && (
-                      <div className="text-xs text-gray-500">— для вибраних класів немає видів</div>
-                    )}
-                  </div>
-                )}
+                <div className="text-xs text-gray-500 mb-1">Вид товарів</div>
+                <Select value={addTypeId} onChange={setAddTypeId}>
+                  <option value="">{addClassId ? '— Оберіть вид —' : '— спочатку оберіть клас —'}</option>
+                  {addTypeOptions.map(t => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                </Select>
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-xs text-gray-500 mb-1">Обрані класи та види</div>
+                <div className="flex flex-wrap gap-2">
+                  {(classIds||[]).map(cid => {
+                    const cls = classOptions.find(c=>c.id===cid);
+                    const style = makeClassChipStyle(cls?.color);
+                    return (
+                      <button key={cid} className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50" style={style} onClick={(e)=>{e.preventDefault(); setClassIds(x=> x.filter(id=>id!==cid));}}>{cls?.name||cid}</button>
+                    );
+                  })}
+                  {(typeIds||[]).map(tid => {
+                    const t = typeOptions.find(tt=>tt.id===tid);
+                    return (
+                      <button key={tid} className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100" onClick={(e)=>{e.preventDefault(); setTypeIds(x=> x.filter(id=>id!==tid));}}>{t?.name||tid}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="md:col-span-4 flex items-center gap-2">
+                <button
+                  className={`rounded-xl px-4 py-2 ${(!addClassId || !addTypeId) ? 'bg-gray-400 text-white cursor-not-allowed' : 'bg-gray-900 text-white'}`}
+                  onClick={() => {
+                    if (!addClassId || !addTypeId) return;
+                    if (!classIds.includes(addClassId)) setClassIds(x => [...x, addClassId]);
+                    if (!typeIds.includes(addTypeId)) setTypeIds(x => [...x, addTypeId]);
+                    setAddTypeId("");
+                  }}
+                  disabled={!addClassId || !addTypeId}
+                >Додати вибір</button>
               </div>
             </div>
             <div className="flex gap-2">
@@ -885,7 +937,26 @@ function SuppliersView({ state, refresh }) {
       </Section>
 
       <Section title="Список постачальників" icon={Package}>
-        <Table columns={cols} rows={Array.isArray(state?.suppliers) ? state.suppliers : []} empty="Постачальників ще немає" />
+        <Table columns={cols} rows={supplierPageRows} empty="Постачальників ще немає" />
+        {totalPages > 1 && (
+          <div className="flex items-center justify-end mt-2 gap-1">
+            <button
+              className={`px-3 py-1 rounded-xl border text-sm ${page <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page > 1 && setPage(page - 1)}
+              disabled={page <= 1}
+            >
+              ‹ Назад
+            </button>
+            <span className="px-2 text-xs text-gray-500">Стор. {page} з {totalPages}</span>
+            <button
+              className={`px-3 py-1 rounded-xl border text-sm ${page >= totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => page < totalPages && setPage(page + 1)}
+              disabled={page >= totalPages}
+            >
+              Вперед ›
+            </button>
+          </div>
+        )}
       </Section>
     </div>
   );
