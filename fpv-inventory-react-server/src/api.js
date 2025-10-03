@@ -23,9 +23,11 @@ export const api = {
   addPurchase: (o) => http("POST", "/purchases", o),
   markDelivered: (id) => http("POST", `/purchases/${id}/mark-delivered`),
   payFromBalance: (id) => http("POST", `/purchases/${id}/pay-from-balance`),
+  addAdditionalCost: (id, o) => http("POST", `/purchases/${id}/add-cost`, o),
   addProduct: (o) => http("POST", "/products", o),
   assemble: (o) => http("POST", "/assembly", o),
   sale: (o) => http("POST", "/sales", o),
+  rebuild: () => http("POST", "/maintenance/rebuild"),
 };
 
 export default api;

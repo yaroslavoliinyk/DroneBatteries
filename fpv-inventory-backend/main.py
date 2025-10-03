@@ -86,6 +86,67 @@ async def upsert_inventory(part_type_id: str, add_qty: float, unit_cost: float) 
         upsert=True,
     )
 
+async def add_value_to_inventory(part_type_id: str, extra_value: float) -> None:
+    """
+    Add pure value to inventory without changing quantity.
+    This is used to distribute additional costs (e.g. delivery) to the
+    moving-average cost of items that are already in stock.
+    new_avg = (qty * avg + extra_value) / qty, if qty > 0
+    """
+    if abs(float(extra_value)) <= 0:
+        return
+    cur = await c_inventory.find_one({"_id": part_type_id})
+    if not cur:
+        # If there is no inventory yet, we cannot add value; skip safely
+        return
+    qty = float(cur.get("qty", 0))
+    if qty <= 0:
+        return
+    avg = float(cur.get("avgCost", 0))
+    new_avg = (qty * avg + float(extra_value)) / qty
+    await c_inventory.update_one(
+        {"_id": part_type_id}, {"$set": {"avgCost": new_avg}}, upsert=True
+    )
+
+async def rebuild_inventory_and_stock() -> None:
+    """
+    Recompute inventory quantities/avg costs and product stock from persisted events:
+    - Delivered purchases add to inventory; additional costs are allocated by value share
+    - Assemblies deduct parts from inventory and increase product stock
+    - Sales decrease product stock
+    """
+    # reset
+    await c_inventory.delete_many({})
+    await c_product_stock.delete_many({})
+
+    # 1) Apply all delivered purchases
+    async for p in c_purchases.find({"delivered": True}):
+        items = p.get("items", [])
+        additional_costs = p.get("additionalCosts", [])
+        items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in items])
+        costs_total = sum([float(c.get("amount", 0)) for c in additional_costs])
+        for it in items:
+            qty = float(it.get("qty", 0))
+            unit_cost = float(it.get("unitCost", 0))
+            base_value = qty * unit_cost
+            share = (base_value / items_total) * costs_total if items_total > 0 else 0.0
+            effective_unit = unit_cost if qty <= 0 else (unit_cost + share / qty)
+            await upsert_inventory(it["partTypeId"], qty, effective_unit)
+
+    # 2) Apply assemblies
+    async for asm in c_assemblies.find():
+        q = int(asm.get("qty", 0))
+        product = await c_products.find_one({"_id": asm.get("productId")})
+        if not product or q <= 0:
+            continue
+        for b in product.get("bom", []):
+            await upsert_inventory(b["partTypeId"], -float(b.get("qty", 0)) * q, 0.0)
+        await inc_product_stock(product["id"], q)
+
+    # 3) Apply sales
+    async for s in c_sales.find():
+        await inc_product_stock(s.get("productId"), -int(s.get("qty", 0)))
+
 async def inc_product_stock(product_id: str, qty: int) -> None:
     cur = await c_product_stock.find_one({"_id": product_id})
     if cur is None:
@@ -153,6 +214,12 @@ class PurchaseItem(BaseModel):
     qty: float
     unitCost: float
 
+class AdditionalCost(BaseModel):
+    id: Optional[str] = None
+    amount: float
+    description: str
+    date: str = Field(default_factory=now_iso)
+
 class Purchase(BaseModel):
     id: Optional[str] = None
     date: str = Field(default_factory=now_iso)
@@ -161,6 +228,7 @@ class Purchase(BaseModel):
     delivered: bool = False
     paidFromBalance: bool = False
     total: float
+    additionalCosts: Optional[List[AdditionalCost]] = []
 
 class ProductBOMItem(BaseModel):
     id: Optional[str] = None
@@ -264,6 +332,9 @@ async def add_purchase(p: Purchase):
     for it in doc["items"]:
         if not it.get("id"):
             it["id"] = str(ObjectId())
+    # initialize additionalCosts if not present
+    if "additionalCosts" not in doc or doc["additionalCosts"] is None:
+        doc["additionalCosts"] = []
     await c_purchases.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -275,9 +346,24 @@ async def mark_purchase_delivered(purchase_id: str):
         raise HTTPException(404, "Purchase not found")
     if p.get("delivered"):
         return {"ok": True, "already": True}
-    # Update inventory by each item
+    # Prepare allocation of additional costs (by value share)
+    items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
+    costs_total = sum([float(c.get("amount", 0)) for c in p.get("additionalCosts", [])])
+    # Avoid division by zero
+    # Map partTypeId -> extra_cost_for_entire_item_row
+    extra_map: Dict[str, float] = {}
     for it in p["items"]:
-        await upsert_inventory(it["partTypeId"], float(it["qty"]), float(it["unitCost"]))
+        base_value = float(it["qty"]) * float(it["unitCost"]) if items_total > 0 else 0.0
+        share = (base_value / items_total) * costs_total if items_total > 0 else 0.0
+        extra_map[it["partTypeId"]] = extra_map.get(it["partTypeId"], 0.0) + share
+
+    # Update inventory for each item with effective unit cost including allocation
+    for it in p["items"]:
+        qty = float(it["qty"])
+        unit_cost = float(it["unitCost"])
+        extra_total_for_item = extra_map.get(it["partTypeId"], 0.0)
+        effective_unit_cost = unit_cost if qty <= 0 else (unit_cost + (extra_total_for_item / qty))
+        await upsert_inventory(it["partTypeId"], qty, effective_unit_cost)
     await c_purchases.update_one({"_id": purchase_id}, {"$set": {"delivered": True}})
     return {"ok": True}
 
@@ -288,18 +374,93 @@ async def pay_purchase_from_balance(purchase_id: str):
         raise HTTPException(404, "Purchase not found")
     if p.get("paidFromBalance"):
         return {"ok": True, "already": True}
+
+    # Calculate total including additional costs
+    items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
+    additional_costs = p.get("additionalCosts", [])
+    costs_total = sum([float(c["amount"]) for c in additional_costs])
+    total = items_total + costs_total
+
     entry = {
         "id": str(ObjectId()),
         "_id": None,
         "date": p.get("date") or now_iso(),
         "type": "purchase",
-        "amount": float(p.get("total", 0)),
+        "amount": total,
         "note": f"Оплата закупки {p.get('vendor') or '(без постачальника)'}",
         "tag": "Покупка",
     }
     entry["_id"] = entry["id"]
     await c_balance.insert_one(entry)
     await c_purchases.update_one({"_id": purchase_id}, {"$set": {"paidFromBalance": True}})
+    return {"ok": True}
+
+class AddAdditionalCostRequest(BaseModel):
+    amount: float
+    description: str
+    date: Optional[str] = None
+
+@app.post("/purchases/{purchase_id}/add-cost")
+async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
+    p = await c_purchases.find_one({"_id": purchase_id})
+    if not p:
+        raise HTTPException(404, "Purchase not found")
+
+    # Create new additional cost entry
+    cost = {
+        "id": str(ObjectId()),
+        "amount": float(req.amount),
+        "description": req.description,
+        "date": req.date or now_iso(),
+    }
+
+    # Get existing additional costs or initialize empty list
+    additional_costs = p.get("additionalCosts", [])
+    additional_costs.append(cost)
+
+    # Calculate new total
+    items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
+    costs_total = sum([float(c["amount"]) for c in additional_costs])
+    new_total = items_total + costs_total
+
+    # Update purchase
+    await c_purchases.update_one(
+        {"_id": purchase_id},
+        {"$set": {"additionalCosts": additional_costs, "total": new_total}}
+    )
+
+    # If purchase was already paid from balance, add additional cost to balance
+    if p.get("paidFromBalance"):
+        balance_entry = {
+            "id": str(ObjectId()),
+            "_id": None,
+            "date": cost["date"],
+            "type": "purchase",
+            "amount": float(req.amount),
+            "note": f"Додаткові витрати ({req.description}) для закупки {p.get('vendor') or '(без постачальника)'}",
+            "tag": "Покупка",
+        }
+        balance_entry["_id"] = balance_entry["id"]
+        await c_balance.insert_one(balance_entry)
+
+    # If purchase has already been delivered, distribute this additional
+    # cost across inventory as pure value (no qty change)
+    if p.get("delivered"):
+        # allocate only the newly added amount by value share
+        items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
+        if items_total > 0 and float(req.amount) != 0:
+            for it in p["items"]:
+                base_value = float(it["qty"]) * float(it["unitCost"]) / items_total
+                share_amount = float(req.amount) * base_value
+                # add this value to the respective inventory average cost
+                await add_value_to_inventory(it["partTypeId"], share_amount)
+
+    return {"ok": True, "cost": cost, "newTotal": new_total}
+
+# --------- Maintenance ---------
+@app.post("/maintenance/rebuild")
+async def maintenance_rebuild():
+    await rebuild_inventory_and_stock()
     return {"ok": True}
 
 # Inventory

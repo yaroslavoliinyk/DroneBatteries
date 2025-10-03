@@ -63,6 +63,12 @@ export default function App() {
         await api.markDelivered(action.purchaseId);
       } else if (action.type === "PAY_PURCHASE_FROM_BALANCE") {
         await api.payFromBalance(action.purchaseId);
+      } else if (action.type === "ADD_ADDITIONAL_COST") {
+        await api.addAdditionalCost(action.purchaseId, {
+          amount: Number(action.amount),
+          description: action.description,
+          date: action.date || todayISO(),
+        });
       } else if (action.type === "ADD_BALANCE_ENTRY") {
         const entry = {
           date: action.date || todayISO(),
@@ -326,6 +332,9 @@ function PurchasesView({ state, dispatch }) {
   const [vendor, setVendor] = useState("");
   const [date, setDate] = useState(todayISO());
   const [items, setItems] = useState([]);
+  const [expandedPurchase, setExpandedPurchase] = useState(null);
+  const [costAmount, setCostAmount] = useState("");
+  const [costDescription, setCostDescription] = useState("");
 
   const partById = (id) => state.partTypes.find((p) => p.id === id);
 
@@ -362,20 +371,57 @@ function PurchasesView({ state, dispatch }) {
   const cols = [
     { key: "date", header: "Дата" },
     { key: "vendor", header: "Постачальник" },
-    { key: "items", header: "Позиції", cell: (r) => (
-      <div className="text-sm text-gray-700 space-y-1">
-        {r.items.map((it) => {
-          const part = partById(it.partTypeId);
-          const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
-          return (
-            <div key={it.id}>
-              • <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}: {it.qty} × {currency(it.unitCost)} = <b>{currency(it.qty * it.unitCost)}</b>
+    { key: "items", header: "Позиції", cell: (r) => {
+      const additionalCosts = r.additionalCosts || [];
+      const itemsTotal = r.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
+      const costsTotal = additionalCosts.reduce((s, c) => s + Number(c.amount || 0), 0);
+
+      return (
+        <div className="text-sm text-gray-700 space-y-1">
+          {r.items.map((it) => {
+            const part = partById(it.partTypeId);
+            const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
+            // allocate additional costs proportionally by item value
+            const baseValue = Number(it.qty || 0) * Number(it.unitCost || 0);
+            const share = itemsTotal > 0 ? (baseValue / itemsTotal) * costsTotal : 0;
+            const effectiveUnit = Number(it.qty || 0) > 0 ? (Number(it.unitCost || 0) + share / Number(it.qty || 0)) : Number(it.unitCost || 0);
+            const effectiveTotal = Number(it.qty || 0) * effectiveUnit;
+            return (
+              <div key={it.id}>
+                • <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}: {it.qty} × {currency(effectiveUnit)} = <b>{currency(effectiveTotal)}</b>
+              </div>
+            );
+          })}
+          {additionalCosts.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-gray-200">
+              <div className="text-xs font-semibold text-gray-600 mb-1">Додаткові витрати:</div>
+              {additionalCosts.map((c) => (
+                <div key={c.id} className="text-blue-700">
+                  + {c.description}: <b>{currency(c.amount)}</b>
+                </div>
+              ))}
             </div>
-          );
-        })}
-      </div>
-    ) },
-    { key: "total", header: "Сума" , cell: (r) => <b>{currency(r.total)}</b>},
+          )}
+        </div>
+      );
+    } },
+    { key: "total", header: "Сума" , cell: (r) => {
+      const itemsTotal = r.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
+      const additionalCosts = r.additionalCosts || [];
+      const costsTotal = additionalCosts.reduce((s, c) => s + Number(c.amount || 0), 0);
+      const total = itemsTotal + costsTotal;
+
+      return (
+        <div>
+          <div className="font-bold">{currency(total)}</div>
+          {costsTotal > 0 && (
+            <div className="text-xs text-gray-500">
+              ({currency(itemsTotal)} + {currency(costsTotal)})
+            </div>
+          )}
+        </div>
+      );
+    }},
     { key: "status", header: "Статус", cell: (r) => (
       <div className="flex gap-2 items-center">
         {r.delivered ? <Tag>Доставлено</Tag> : <Tag>В дорозі</Tag>}
@@ -383,17 +429,61 @@ function PurchasesView({ state, dispatch }) {
       </div>
     ) },
     { key: "actions", header: "Дії", cell: (r) => (
-      <div className="flex gap-2">
+      <div className="flex flex-col gap-2">
+        <div className="flex gap-2">
+          <button
+            className={`px-3 py-1 rounded-xl border text-sm ${r.delivered ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+            onClick={() => !r.delivered && dispatch({ type: "MARK_PURCHASE_DELIVERED", purchaseId: r.id })}
+            disabled={r.delivered}
+          >Позначити доставлено</button>
+          <button
+            className={`px-3 py-1 rounded-xl border text-sm ${r.paidFromBalance ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+            onClick={() => !r.paidFromBalance && dispatch({ type: "PAY_PURCHASE_FROM_BALANCE", purchaseId: r.id })}
+            disabled={r.paidFromBalance}
+          >Оплатити з балансу</button>
+        </div>
         <button
-          className={`px-3 py-1 rounded-xl border ${r.delivered ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
-          onClick={() => !r.delivered && dispatch({ type: "MARK_PURCHASE_DELIVERED", purchaseId: r.id })}
-          disabled={r.delivered}
-        >Позначити доставлено</button>
-        <button
-          className={`px-3 py-1 rounded-xl border ${r.paidFromBalance ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
-          onClick={() => !r.paidFromBalance && dispatch({ type: "PAY_PURCHASE_FROM_BALANCE", purchaseId: r.id })}
-          disabled={r.paidFromBalance}
-        >Оплатити з балансу</button>
+          className="px-3 py-1 rounded-xl border text-sm hover:bg-blue-50 border-blue-300 text-blue-700"
+          onClick={() => setExpandedPurchase(expandedPurchase === r.id ? null : r.id)}
+        >
+          {expandedPurchase === r.id ? '− Сховати' : '+ Додати витрати'}
+        </button>
+        {expandedPurchase === r.id && (
+          <div className="mt-2 p-3 bg-blue-50 rounded-xl space-y-2">
+            {r.paidFromBalance && (
+              <div className="text-xs bg-yellow-100 border border-yellow-300 rounded-lg p-2 text-yellow-800">
+                ⚠️ Закупка вже оплачена. Додаткові витрати автоматично спишуться з балансу.
+              </div>
+            )}
+            <TextInput
+              value={costDescription}
+              onChange={setCostDescription}
+              placeholder="Опис (напр., Доставка)"
+            />
+            <NumberInput
+              value={costAmount}
+              onChange={setCostAmount}
+              placeholder="Сума"
+            />
+            <button
+              className="w-full px-3 py-2 rounded-xl bg-blue-600 text-white text-sm hover:bg-blue-700"
+              onClick={() => {
+                if (!costDescription.trim() || !costAmount || Number(costAmount) <= 0) return;
+                dispatch({
+                  type: "ADD_ADDITIONAL_COST",
+                  purchaseId: r.id,
+                  amount: Number(costAmount),
+                  description: costDescription
+                });
+                setCostAmount("");
+                setCostDescription("");
+                setExpandedPurchase(null);
+              }}
+            >
+              <Plus className="w-4 h-4 inline mr-1" /> Додати витрати
+            </button>
+          </div>
+        )}
       </div>
     ) },
   ];
@@ -787,12 +877,35 @@ function SettingsView({ state, dispatch, serverMode }) {
     a.click();
     URL.revokeObjectURL(url);
   }
+  async function rebuild() {
+    await api.rebuild();
+    // Обновити снапшот після перерахунку, щоб одразу побачити зміни
+    const s = await api.getState();
+    // Грубо, але просто: оновимо весь state через локальний трик
+    // (рефреш у батьківському компоненті вже існує, але тут робимо швидке оновлення)
+    // Використаємо window.dispatchEvent, щоб не ламати структуру. Спрощено: перезавантажимо сторінку
+    // якщо щось піде не так.
+    try {
+      // Прямого сеттера в SettingsView немає; використаємо швидкий спосіб:
+      // створимо кастомну подію і перехопимо її на верхньому рівні в майбутньому, а зараз —
+      // тимчасово просто перезавантажимо стан через грубий спосіб: перезавантаження сторінки.
+      // Щоб уникнути повного reload, зробимо найпростіше — викличемо глобальний refresh через location.
+      // Це забезпечить синхронізацію всіх вкладок без складних пропсів.
+      // eslint-disable-next-line no-restricted-globals
+      location.reload();
+    } catch (_) {
+      alert("Склад та залишки перераховано. Оновіть сторінку для відображення.");
+    }
+  }
 
   return (
     <Section title="Налаштування та дані" icon={Settings}>
       <div className="flex flex-wrap gap-3">
         <button className="rounded-xl border px-4 py-2 flex items-center gap-2 hover:bg-gray-50" onClick={exportJSON}>
           <Download className="w-4 h-4" /> Експорт JSON (з сервера)
+        </button>
+        <button className="rounded-xl border px-4 py-2 flex items-center gap-2 hover:bg-gray-50" onClick={rebuild}>
+          <Wrench className="w-4 h-4" /> Перерахувати склад
         </button>
         <button className="rounded-xl border px-4 py-2 flex items-center gap-2 cursor-not-allowed opacity-60" title="У серверному режимі імпорт ще не підключено">
           <Upload className="w-4 h-4" /> Імпорт JSON (н/д)
