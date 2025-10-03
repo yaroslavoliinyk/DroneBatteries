@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, Battery, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, Battery, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info } from "lucide-react";
 import api from "./api";
 
 /**
@@ -30,6 +30,11 @@ export default function App() {
     }
   }
 
+  // Merge a partial state without showing global loading screen
+  function applyPartialState(patch) {
+    setState((prev) => ({ ...(prev || {}), ...(patch || {}) }));
+  }
+
   // dispatch mapper that mimics previous reducer API
   async function dispatch(action) {
     try {
@@ -58,7 +63,7 @@ export default function App() {
           }
         });
         const total = items.reduce((s, it) => s + it.qty * it.unitCost, 0);
-        await api.addPurchase({ vendor: action.vendor || "", date: action.date || todayISO(), items, total });
+        await api.addPurchase({ vendor: action.vendor || "", date: action.date || todayISO(), items, total, isService: !!action.isService });
       } else if (action.type === "MARK_PURCHASE_DELIVERED") {
         await api.markDelivered(action.purchaseId);
       } else if (action.type === "PAY_PURCHASE_FROM_BALANCE") {
@@ -143,7 +148,7 @@ export default function App() {
       <main className="max-w-6xl mx-auto p-4 space-y-6">
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
         {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
-        {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} />}
+        {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
@@ -328,10 +333,11 @@ function PartsView({ state, dispatch }) {
   );
 }
 
-function PurchasesView({ state, dispatch }) {
+function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   const [vendor, setVendor] = useState("");
   const [date, setDate] = useState(todayISO());
   const [items, setItems] = useState([]);
+  const [isService, setIsService] = useState(false);
   const [expandedPurchase, setExpandedPurchase] = useState(null);
   const [costAmount, setCostAmount] = useState("");
   const [costDescription, setCostDescription] = useState("");
@@ -392,7 +398,7 @@ function PurchasesView({ state, dispatch }) {
               </div>
             );
           })}
-          {additionalCosts.length > 0 && (
+          {additionalCosts.length > 0 && !r.isService && (
             <div className="mt-2 pt-2 border-t border-gray-200">
               <div className="text-xs font-semibold text-gray-600 mb-1">Додаткові витрати:</div>
               {additionalCosts.map((c) => (
@@ -424,31 +430,73 @@ function PurchasesView({ state, dispatch }) {
     }},
     { key: "status", header: "Статус", cell: (r) => (
       <div className="flex gap-2 items-center">
-        {r.delivered ? <Tag>Доставлено</Tag> : <Tag>В дорозі</Tag>}
+        {!r.isService && (r.delivered ? <Tag>Доставлено</Tag> : <Tag>В дорозі</Tag>)}
         {r.paidFromBalance ? <Tag>Оплачено</Tag> : <Tag>Не оплачено</Tag>}
+        {r.isService && (
+          <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 border border-purple-300 text-purple-800">Послуги</span>
+        )}
       </div>
     ) },
     { key: "actions", header: "Дії", cell: (r) => (
       <div className="flex flex-col gap-2">
         <div className="flex gap-2">
-          <button
-            className={`px-3 py-1 rounded-xl border text-sm ${r.delivered ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
-            onClick={() => !r.delivered && dispatch({ type: "MARK_PURCHASE_DELIVERED", purchaseId: r.id })}
-            disabled={r.delivered}
-          >Позначити доставлено</button>
+          {!r.isService && (
+            <button
+              className={`px-3 py-1 rounded-xl border text-sm ${r.delivered ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => !r.delivered && dispatch({ type: "MARK_PURCHASE_DELIVERED", purchaseId: r.id })}
+              disabled={r.delivered}
+            >Позначити доставлено</button>
+          )}
           <button
             className={`px-3 py-1 rounded-xl border text-sm ${r.paidFromBalance ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
             onClick={() => !r.paidFromBalance && dispatch({ type: "PAY_PURCHASE_FROM_BALANCE", purchaseId: r.id })}
             disabled={r.paidFromBalance}
           >Оплатити з балансу</button>
         </div>
-        <button
-          className="px-3 py-1 rounded-xl border text-sm hover:bg-blue-50 border-blue-300 text-blue-700"
-          onClick={() => setExpandedPurchase(expandedPurchase === r.id ? null : r.id)}
-        >
-          {expandedPurchase === r.id ? '− Сховати' : '+ Додати витрати'}
-        </button>
-        {expandedPurchase === r.id && (
+        <label className="flex items-center gap-2 text-xs text-gray-700">
+          <input
+            type="checkbox"
+            className="scale-110"
+            checked={!!r.isService}
+            onChange={async (e) => {
+              const next = e.target.checked;
+              const prev = !!r.isService;
+              // Оптимістичне оновлення UI конкретного рядка
+              applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: next } : p) });
+              try {
+                await api.toggleService(r.id, next);
+                // Швидко оновимо інвентар і залишки продуктів (без повного state)
+                const s = await api.getState();
+                applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+              } catch (err) {
+                // Відкотимо оптимістичну зміну при помилці
+                applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: prev } : p) });
+                alert(String(err));
+              }
+            }}
+          />
+          Позначити як послуги
+          <span
+            className="inline-flex items-center cursor-pointer"
+            title="не впливає на склад"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              alert("Послуги: закупка не впливає на склад. Позиції не додаються у склад, додаткові витрати не розподіляються по собівартості.");
+            }}
+          >
+            <Info className="w-3 h-3 text-gray-500" />
+          </span>
+        </label>
+        {!r.isService && (
+          <button
+            className="px-3 py-1 rounded-xl border text-sm hover:bg-blue-50 border-blue-300 text-blue-700"
+            onClick={() => setExpandedPurchase(expandedPurchase === r.id ? null : r.id)}
+          >
+            {expandedPurchase === r.id ? '− Сховати' : '+ Додати витрати'}
+          </button>
+        )}
+        {expandedPurchase === r.id && !r.isService && (
           <div className="mt-2 p-3 bg-blue-50 rounded-xl space-y-2">
             {r.paidFromBalance && (
               <div className="text-xs bg-yellow-100 border border-yellow-300 rounded-lg p-2 text-yellow-800">
@@ -495,10 +543,25 @@ function PurchasesView({ state, dispatch }) {
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку додайте <b>Види деталей</b>.</div>
         ) : (
           <div className="grid gap-3">
-            <div className="grid md:grid-cols-3 gap-3">
+            <div className="grid md:grid-cols-3 gap-3 items-center">
               <TextInput value={vendor} onChange={setVendor} placeholder="Постачальник" />
               <input type="date" className="border rounded-xl px-3 py-2" value={date} onChange={(e) => setDate(e.target.value)} />
-              <div className="flex">
+              <div className="flex items-center gap-3 ml-auto">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" className="scale-110" checked={isService} onChange={(e) => setIsService(e.target.checked)} />
+                  Послуги
+                  <span
+                    className="inline-flex items-center cursor-pointer"
+                    title="не впливає на склад"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      alert("Послуги: закупка не впливає на склад. Позиції не додаються у склад, додаткові витрати не розподіляються по собівартості.");
+                    }}
+                  >
+                    <Info className="w-4 h-4 text-gray-500" />
+                  </span>
+                </label>
                 <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={addRow}><Plus className="w-4 h-4"/> Додати позицію</button>
               </div>
             </div>
@@ -584,8 +647,8 @@ function PurchasesView({ state, dispatch }) {
                     return Number(r.unitCost || 0) >= 0;
                   });
                   if (!valid) return;
-                  dispatch({ type: "ADD_PURCHASE", vendor, date, items });
-                  setVendor(""); setDate(todayISO()); setItems([]);
+                  dispatch({ type: "ADD_PURCHASE", vendor, date, items, isService });
+                  setVendor(""); setDate(todayISO()); setItems([]); setIsService(false);
                 }}
               ><Save className="w-4 h-4" /> Зберегти закупку</button>
             </div>

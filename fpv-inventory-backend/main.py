@@ -119,8 +119,10 @@ async def rebuild_inventory_and_stock() -> None:
     await c_inventory.delete_many({})
     await c_product_stock.delete_many({})
 
-    # 1) Apply all delivered purchases
+    # 1) Apply all delivered purchases (skip services)
     async for p in c_purchases.find({"delivered": True}):
+        if p.get("isService"):
+            continue
         items = p.get("items", [])
         additional_costs = p.get("additionalCosts", [])
         items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in items])
@@ -229,6 +231,7 @@ class Purchase(BaseModel):
     paidFromBalance: bool = False
     total: float
     additionalCosts: Optional[List[AdditionalCost]] = []
+    isService: bool = False
 
 class ProductBOMItem(BaseModel):
     id: Optional[str] = None
@@ -346,6 +349,9 @@ async def mark_purchase_delivered(purchase_id: str):
         raise HTTPException(404, "Purchase not found")
     if p.get("delivered"):
         return {"ok": True, "already": True}
+    if p.get("isService"):
+        await c_purchases.update_one({"_id": purchase_id}, {"$set": {"delivered": True}})
+        return {"ok": True}
     # Prepare allocation of additional costs (by value share)
     items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
     costs_total = sum([float(c.get("amount", 0)) for c in p.get("additionalCosts", [])])
@@ -445,7 +451,7 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
 
     # If purchase has already been delivered, distribute this additional
     # cost across inventory as pure value (no qty change)
-    if p.get("delivered"):
+    if p.get("delivered") and not p.get("isService"):
         # allocate only the newly added amount by value share
         items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
         if items_total > 0 and float(req.amount) != 0:
@@ -462,6 +468,20 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
 async def maintenance_rebuild():
     await rebuild_inventory_and_stock()
     return {"ok": True}
+
+# --------- Admin updates ---------
+class ToggleServiceRequest(BaseModel):
+    isService: bool
+
+@app.post("/purchases/{purchase_id}/toggle-service")
+async def toggle_purchase_service(purchase_id: str, body: ToggleServiceRequest):
+    p = await c_purchases.find_one({"_id": purchase_id})
+    if not p:
+        raise HTTPException(404, "Purchase not found")
+    await c_purchases.update_one({"_id": purchase_id}, {"$set": {"isService": bool(body.isService)}})
+    # Rebuild inventory/stock to ensure consistency
+    await rebuild_inventory_and_stock()
+    return {"ok": True, "isService": bool(body.isService)}
 
 # Inventory
 @app.get("/inventory")

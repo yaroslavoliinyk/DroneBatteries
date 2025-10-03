@@ -17,6 +17,7 @@ async function http(method, url, body) {
 
 export const api = {
   getState: () => http("GET", "/state"),
+  listPurchases: () => http("GET", "/purchases"),
   addBalanceEntry: (e) => http("POST", "/balance/entries", e),
   addPartClass: (o) => http("POST", "/parts/classes", o),
   addPartType: (o) => http("POST", "/parts/types", o),
@@ -24,6 +25,7 @@ export const api = {
   markDelivered: (id) => http("POST", `/purchases/${id}/mark-delivered`),
   payFromBalance: (id) => http("POST", `/purchases/${id}/pay-from-balance`),
   addAdditionalCost: (id, o) => http("POST", `/purchases/${id}/add-cost`, o),
+  toggleService: (id, isService) => http("POST", `/purchases/${id}/toggle-service`, { isService }),
   addProduct: (o) => http("POST", "/products", o),
   assemble: (o) => http("POST", "/assembly", o),
   sale: (o) => http("POST", "/sales", o),
