@@ -364,9 +364,15 @@ function PurchasesView({ state, dispatch }) {
     { key: "vendor", header: "Постачальник" },
     { key: "items", header: "Позиції", cell: (r) => (
       <div className="text-sm text-gray-700 space-y-1">
-        {r.items.map((it) => (
-          <div key={it.id}>• {partById(it.partTypeId)?.name || "?"}: {it.qty} × {currency(it.unitCost)} = <b>{currency(it.qty * it.unitCost)}</b></div>
-        ))}
+        {r.items.map((it) => {
+          const part = partById(it.partTypeId);
+          const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
+          return (
+            <div key={it.id}>
+              • <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}: {it.qty} × {currency(it.unitCost)} = <b>{currency(it.qty * it.unitCost)}</b>
+            </div>
+          );
+        })}
       </div>
     ) },
     { key: "total", header: "Сума" , cell: (r) => <b>{currency(r.total)}</b>},
