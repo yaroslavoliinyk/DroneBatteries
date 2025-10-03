@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, Battery, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter } from "lucide-react";
 import api from "./api";
 
 /**
@@ -15,6 +15,7 @@ export default function App() {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("balance");
+  const [group, setGroup] = useState("main"); // main | operations | info | other
   const [error, setError] = useState("");
 
   async function refresh() {
@@ -128,42 +129,66 @@ export default function App() {
     <div className="min-h-screen bg-gray-100">
       <header className="sticky top-0 z-10 bg-white border-b">
         <div className="max-w-[93.6rem] mx-auto flex items-center justify-between p-3">
-          <div className="flex items-center gap-2">
-            <Battery className="w-6 h-6" />
-            <div className="font-semibold">FPV Batteries – Склад (Mongo)</div>
-          </div>
-          {/* moved primary navigation to left sidebar to reduce top clutter */}
+          <button className="flex items-center gap-2 group" onClick={() => { setGroup("main"); setTab("inventory"); }}>
+            <BatteryFull className="w-6 h-6" />
+            <div className="font-semibold group-hover:underline">FPV Batteries – Склад</div>
+          </button>
+          <nav className="flex gap-1 overflow-x-auto">
+            <GroupTabBtn id="main" group={group} setGroup={setGroup} setTab={setTab}>Головне</GroupTabBtn>
+            <GroupTabBtn id="operations" group={group} setGroup={setGroup} setTab={setTab}>Операції</GroupTabBtn>
+            <GroupTabBtn id="info" group={group} setGroup={setGroup} setTab={setTab}>Інфо</GroupTabBtn>
+            <GroupTabBtn id="other" group={group} setGroup={setGroup} setTab={setTab}>Інше</GroupTabBtn>
+          </nav>
         </div>
       </header>
 
       <div className="max-w-[93.6rem] mx-auto p-4 grid md:grid-cols-[220px_1fr] gap-4">
         <aside className="bg-white border rounded-2xl p-3 h-max sticky top-16">
-          <div className="text-xs uppercase text-gray-500 mb-2">Операції</div>
-          <div className="grid gap-1 mb-3">
-            <TabBtn icon={ShoppingCart} id="purchases" tab={tab} setTab={setTab}>Закупки</TabBtn>
-            <TabBtn icon={Warehouse} id="inventory" tab={tab} setTab={setTab}>Склад</TabBtn>
-            <TabBtn icon={Boxes} id="products" tab={tab} setTab={setTab}>Продукти (BOM)</TabBtn>
-            <TabBtn icon={Factory} id="assembly" tab={tab} setTab={setTab}>Збірка</TabBtn>
-            <TabBtn icon={DollarSign} id="sales" tab={tab} setTab={setTab}>Продажі</TabBtn>
-          </div>
-          <div className="text-xs uppercase text-gray-500 mb-2">Довідники</div>
-          <div className="grid gap-1 mb-3">
-            <TabBtn icon={Package} id="parts" tab={tab} setTab={setTab}>Види деталей</TabBtn>
-            <TabBtn icon={Package} id="suppliers" tab={tab} setTab={setTab}>Постачальники</TabBtn>
-          </div>
-          <div className="text-xs uppercase text-gray-500 mb-2">Інше</div>
-          <div className="grid gap-1">
-            <TabBtn icon={Coins} id="balance" tab={tab} setTab={setTab}>Баланс</TabBtn>
-            <TabBtn icon={Settings} id="settings" tab={tab} setTab={setTab}>Налаштування</TabBtn>
-        </div>
+          {group === "main" && (
+            <>
+              <div className="text-xs uppercase text-gray-500 mb-2">Головне</div>
+              <div className="grid gap-1">
+                <TabBtn icon={Warehouse} id="inventory" tab={tab} setTab={setTab}>Склад</TabBtn>
+                <TabBtn icon={Coins} id="balance" tab={tab} setTab={setTab}>Баланс</TabBtn>
+              </div>
+            </>
+          )}
+          {group === "operations" && (
+            <>
+              <div className="text-xs uppercase text-gray-500 mb-2">Операції</div>
+              <div className="grid gap-1">
+                <TabBtn icon={ShoppingCart} id="purchases" tab={tab} setTab={setTab}>Закупки</TabBtn>
+                <TabBtn icon={Factory} id="assembly" tab={tab} setTab={setTab}>Збірка</TabBtn>
+                <TabBtn icon={DollarSign} id="sales" tab={tab} setTab={setTab}>Продажі</TabBtn>
+              </div>
+            </>
+          )}
+          {group === "info" && (
+            <>
+              <div className="text-xs uppercase text-gray-500 mb-2">Інфо</div>
+              <div className="grid gap-1">
+                <TabBtn icon={Boxes} id="products" tab={tab} setTab={setTab}>Продукти</TabBtn>
+                <TabBtn icon={Package} id="parts" tab={tab} setTab={setTab}>Види деталей</TabBtn>
+                <TabBtn icon={Package} id="suppliers" tab={tab} setTab={setTab}>Постачальники</TabBtn>
+              </div>
+            </>
+          )}
+          {group === "other" && (
+            <>
+              <div className="text-xs uppercase text-gray-500 mb-2">Інше</div>
+              <div className="grid gap-1">
+                <TabBtn icon={Settings} id="settings" tab={tab} setTab={setTab}>Налаштування</TabBtn>
+              </div>
+            </>
+          )}
         </aside>
         <main className="space-y-6">
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
           {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
           {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} />}
-        {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
+          {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} />}
-        {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
+          {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
         {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
         {tab === "settings" && <SettingsView state={state} dispatch={dispatch} serverMode/>}
@@ -232,112 +257,6 @@ function Table({ columns, rows, empty = "Немає даних", fixed = false }
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-function SuppliersView({ state, refresh }) {
-  const [name, setName] = useState("");
-  const [website, setWebsite] = useState("");
-  const [note, setNote] = useState("");
-  const [links, setLinks] = useState([]);
-  const [classIds, setClassIds] = useState([]);
-  const [typeIds, setTypeIds] = useState([]);
-
-  function addLink() { setLinks(x => [...x, { id: Math.random().toString(36).slice(2), title: "", url: "" }]); }
-  function updateLink(id, patch) { setLinks(x => x.map(l => l.id === id ? { ...l, ...patch } : l)); }
-  function removeLink(id) { setLinks(x => x.filter(l => l.id !== id)); }
-
-  const classOptions = state.partClasses;
-  const typeOptions = state.partTypes;
-
-  async function saveSupplier() {
-    if (!name.trim()) return;
-    try {
-      await api.addSupplier({ name, website, note, links, classIds, typeIds });
-      setName(""); setWebsite(""); setNote(""); setLinks([]); setClassIds([]); setTypeIds([]);
-      await refresh();
-    } catch (e) {
-      alert(String(e));
-    }
-  }
-
-  const cols = [
-    { key: "name", header: "Назва" },
-    { key: "website", header: "Вебсайт", cell: (s) => s.website ? (<a className="text-blue-700 underline" href={s.website} target="_blank" rel="noreferrer">{s.website}</a>) : "—" },
-    { key: "links", header: "Посилання", cell: (s) => (
-      <div className="text-sm text-gray-700 space-y-1">
-        {(s.links||[]).map(l => (
-          <div key={l.id}>• {l.title || 'Посилання'}: <a className="text-blue-700 underline" href={l.url} target="_blank" rel="noreferrer">{l.url}</a></div>
-        ))}
-      </div>
-    ) },
-    { key: "classes", header: "Класи", cell: (s) => (s.classIds||[]).map(id => classOptions.find(c=>c.id===id)?.name||id).join(', ') || '—' },
-    { key: "types", header: "Види", cell: (s) => (s.typeIds||[]).map(id => typeOptions.find(t=>t.id===id)?.name||id).join(', ') || '—' },
-    { key: "note", header: "Нотатка" },
-    { key: "actions", header: "—", thClass: "w-28", cell: (s) => (
-      <div className="flex gap-2">
-        <button
-          className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
-          onClick={async () => { if (!confirm('Видалити постачальника?')) return; await api.deleteSupplier(s.id); await refresh(); }}
-        >Видалити</button>
-      </div>
-    ) },
-  ];
-
-  return (
-    <div className="space-y-6">
-      <Section title="Постачальники" icon={Package}>
-        <div className="grid gap-3">
-          <div className="grid md:grid-cols-3 gap-3">
-            <TextInput value={name} onChange={setName} placeholder="Назва" />
-            <TextInput value={website} onChange={setWebsite} placeholder="Вебсайт (https://...)" />
-            <TextInput value={note} onChange={setNote} placeholder="Нотатка" />
-          </div>
-          <div className="grid gap-2">
-            <div className="text-sm font-medium">Посилання</div>
-            {links.length === 0 && <div className="text-xs text-gray-500">Додайте посилання</div>}
-            {links.map(l => (
-              <div key={l.id} className="grid md:grid-cols-3 gap-2">
-                <TextInput value={l.title} onChange={(v)=>updateLink(l.id,{title:v})} placeholder="Назва (необов'язково)" />
-                <TextInput value={l.url} onChange={(v)=>updateLink(l.id,{url:v})} placeholder="URL" />
-                <button className="px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={()=>removeLink(l.id)}>Прибрати</button>
-              </div>
-            ))}
-            <button className="w-max px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={addLink}>+ Додати посилання</button>
-          </div>
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
-              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-                {classOptions.map(c => (
-                  <label key={c.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" className="scale-110" checked={classIds.includes(c.id)} onChange={(e)=> setClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
-                    {c.name}
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Види товарів</div>
-              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-                {typeOptions.map(t => (
-                  <label key={t.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" className="scale-110" checked={typeIds.includes(t.id)} onChange={(e)=> setTypeIds(x => e.target.checked ? [...x, t.id] : x.filter(id=>id!==t.id)) } />
-                    {t.name}
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="flex">
-            <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={saveSupplier}><Save className="w-4 h-4"/> Зберегти постачальника</button>
-          </div>
-        </div>
-      </Section>
-
-      <Section title="Список постачальників" icon={Package}>
-        <Table columns={cols} rows={state.suppliers || []} empty="Постачальників ще немає" />
-      </Section>
     </div>
   );
 }
@@ -458,6 +377,113 @@ function PartsView({ state, dispatch }) {
         </div>
 
         <Table columns={typeCols} rows={state.partTypes} empty="Немає видів деталей" />
+      </Section>
+    </div>
+  );
+}
+
+function SuppliersView({ state, refresh }) {
+  const [name, setName] = useState("");
+  const [website, setWebsite] = useState("");
+  const [note, setNote] = useState("");
+  const [links, setLinks] = useState([]);
+  const [classIds, setClassIds] = useState([]);
+  const [typeIds, setTypeIds] = useState([]);
+
+  const classOptions = Array.isArray(state?.partClasses) ? state.partClasses : [];
+  const typeOptions = Array.isArray(state?.partTypes) ? state.partTypes : [];
+
+  function addLink() { setLinks(x => [...x, { id: Math.random().toString(36).slice(2), title: "", url: "" }]); }
+  function updateLink(id, patch) { setLinks(x => x.map(l => l.id === id ? { ...l, ...patch } : l)); }
+  function removeLink(id) { setLinks(x => x.filter(l => l.id !== id)); }
+
+  async function saveSupplier() {
+    if (!name.trim()) return;
+    try {
+      await api.addSupplier({ name, website, note, links, classIds, typeIds });
+      setName(""); setWebsite(""); setNote(""); setLinks([]); setClassIds([]); setTypeIds([]);
+      await refresh();
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  const cols = [
+    { key: "name", header: "Назва" },
+    { key: "website", header: "Вебсайт", cell: (s) => s.website ? (<a className="text-blue-700 underline" href={s.website} target="_blank" rel="noreferrer">{s.website}</a>) : "—" },
+    { key: "links", header: "Посилання", cell: (s) => (
+      <div className="text-sm text-gray-700 space-y-1">
+        {(s.links||[]).map(l => (
+          <div key={l.id}>• {l.title || 'Посилання'}: <a className="text-blue-700 underline" href={l.url} target="_blank" rel="noreferrer">{l.url}</a></div>
+        ))}
+      </div>
+    ) },
+    { key: "classes", header: "Класи", cell: (s) => (s.classIds||[]).map(id => classOptions.find(c=>c.id===id)?.name||id).join(', ') || '—' },
+    { key: "types", header: "Види", cell: (s) => (s.typeIds||[]).map(id => typeOptions.find(t=>t.id===id)?.name||id).join(', ') || '—' },
+    { key: "note", header: "Нотатка" },
+    { key: "actions", header: "—", thClass: "w-28", cell: (s) => (
+      <div className="flex gap-2">
+        <button
+          className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
+          onClick={async () => { if (!confirm('Видалити постачальника?')) return; await api.deleteSupplier(s.id); await refresh(); }}
+        >Видалити</button>
+      </div>
+    ) },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <Section title="Постачальники" icon={Package}>
+        <div className="grid gap-3">
+          <div className="grid md:grid-cols-3 gap-3">
+            <TextInput value={name} onChange={setName} placeholder="Назва" />
+            <TextInput value={website} onChange={setWebsite} placeholder="Вебсайт (https://...)" />
+            <TextInput value={note} onChange={setNote} placeholder="Нотатка" />
+          </div>
+          <div className="grid gap-2">
+            <div className="text-sm font-medium">Посилання</div>
+            {links.length === 0 && <div className="text-xs text-gray-500">Додайте посилання</div>}
+            {links.map(l => (
+              <div key={l.id} className="grid md:grid-cols-3 gap-2">
+                <TextInput value={l.title} onChange={(v)=>updateLink(l.id,{title:v})} placeholder="Назва (необов'язково)" />
+                <TextInput value={l.url} onChange={(v)=>updateLink(l.id,{url:v})} placeholder="URL" />
+                <button className="px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={()=>removeLink(l.id)}>Прибрати</button>
+              </div>
+            ))}
+            <button className="w-max px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={addLink}>+ Додати посилання</button>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
+              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
+                {classOptions.map(c => (
+                  <label key={c.id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" className="scale-110" checked={classIds.includes(c.id)} onChange={(e)=> setClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
+                    {c.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Види товарів</div>
+              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
+                {typeOptions.map(t => (
+                  <label key={t.id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" className="scale-110" checked={typeIds.includes(t.id)} onChange={(e)=> setTypeIds(x => e.target.checked ? [...x, t.id] : x.filter(id=>id!==t.id)) } />
+                    {t.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex">
+            <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={saveSupplier}><Save className="w-4 h-4"/> Зберегти постачальника</button>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Список постачальників" icon={Package}>
+        <Table columns={cols} rows={Array.isArray(state?.suppliers) ? state.suppliers : []} empty="Постачальників ще немає" />
       </Section>
     </div>
   );
@@ -621,7 +647,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     }
     if (dateFrom) chips.push(`З: ${dateFrom}`);
     if (dateTo) chips.push(`По: ${dateTo}`);
-    if (vendorQuery.trim()) chips.push(`Постачальник: “${vendorQuery.trim()}”`);
+    if (vendorQuery.trim()) chips.push(`Постачальник: "${vendorQuery.trim()}"`);
     if (minTotal !== "") chips.push(`Сума ≥ ${Number(minTotal).toFixed(2)}`);
     if (maxTotal !== "") chips.push(`Сума ≤ ${Number(maxTotal).toFixed(2)}`);
     return chips;
@@ -1328,7 +1354,7 @@ function ProductsView({ state, dispatch }) {
 
   return (
     <div className="space-y-6">
-      <Section title="Новий продукт (BOM)" icon={Boxes}>
+      <Section title="Новий продукт" icon={Boxes}>
         {state.partTypes.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку додайте <b>Види деталей</b>.</div>
         ) : (
@@ -1571,5 +1597,27 @@ function SettingsView({ state, dispatch, serverMode }) {
         Ви працюєте у <b>серверному режимі</b>: всі дані пишуться у MongoDB через FastAPI.
       </div>
     </Section>
+  );
+}
+
+function GroupTabBtn({ id, group, setGroup, setTab, children }) {
+  const active = group === id;
+  function onClick() {
+    setGroup(id);
+    // Select default tab per group
+    if (setTab) {
+      if (id === 'main') setTab('inventory');
+      else if (id === 'operations') setTab('purchases');
+      else if (id === 'info') setTab('products');
+      else if (id === 'other') setTab('settings');
+    }
+  }
+  return (
+    <button
+      onClick={onClick}
+      className={`px-3 py-2 rounded-xl flex items-center gap-2 border ${active ? "bg-gray-900 text-white" : "bg-white hover:bg-gray-50"}`}
+    >
+      {children}
+    </button>
   );
 }
