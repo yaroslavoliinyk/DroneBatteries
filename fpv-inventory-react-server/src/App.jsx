@@ -673,7 +673,23 @@ function SuppliersView({ state, refresh }) {
           </label>
         ))}
       </div>
-    ) : ((s.classIds||[]).map(id => classOptions.find(c=>c.id===id)?.name||id).join(', ') || '—') },
+    ) : (
+      <div className="flex flex-wrap gap-2">
+        {(s.classIds||[]).map(id => {
+          const cls = classOptions.find(c=>c.id===id);
+          const style = makeClassChipStyle(cls?.color);
+          return (
+            <button
+              key={id}
+              className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+              style={style}
+              onClick={(e)=>{ e.preventDefault(); }}
+            >{cls?.name || id}</button>
+          );
+        })}
+        {(!s.classIds || s.classIds.length===0) && '—'}
+      </div>
+    ) },
     { key: "types", header: "Види", cell: (s) => editingId === s.id ? (
       <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
         {typeOptions.map(t => (
@@ -683,7 +699,36 @@ function SuppliersView({ state, refresh }) {
           </label>
         ))}
       </div>
-    ) : ((s.typeIds||[]).map(id => typeOptions.find(t=>t.id===id)?.name||id).join(', ') || '—') },
+    ) : (
+      (()=>{
+        const groups = (s.classIds||[]).map(cid => {
+          const typesForClass = (s.typeIds||[]).map(id => typeOptions.find(t=>t.id===id)).filter(Boolean).filter(t => t.classId === cid);
+          return { cid, types: typesForClass };
+        }).filter(g => g.types.length > 0);
+        if (groups.length === 0) return '—';
+        return (
+          <div className="text-xs text-gray-700">
+            {groups.map((g, idx) => {
+              const cls = classOptions.find(c=>c.id===g.cid);
+              const style = makeClassChipStyle(cls?.color);
+              return (
+                <div key={g.cid} className="space-y-1">
+                  <div>
+                    <button className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50" style={style} onClick={(e)=>e.preventDefault()}>{cls?.name || g.cid}</button>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {g.types.map(t => (
+                      <button key={t.id} className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100" onClick={(e)=>e.preventDefault()}>{t.name}</button>
+                    ))}
+                  </div>
+                  {idx < groups.length - 1 && (<div className="h-[1px] bg-gray-200 my-2" />)}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()
+    ) },
     { key: "note", header: "Нотатка", cell: (s) => editingId === s.id ? (
       <TextInput value={editNote} onChange={setEditNote} placeholder="Нотатка" />
     ) : (s.note || '') },
