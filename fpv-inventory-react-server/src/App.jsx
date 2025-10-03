@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound } from "lucide-react";
 import api from "./api";
 
 /**
@@ -11,11 +11,32 @@ import api from "./api";
 const currency = (n) => (isNaN(n) ? "0.00" : Number(n).toFixed(2));
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+// Color helpers for class chips
+function hexToRgb(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  const m = hex.replace('#','');
+  if (![3,6].includes(m.length)) return null;
+  const full = m.length === 3 ? m.split('').map(c=>c+c).join('') : m;
+  const num = parseInt(full, 16);
+  if (Number.isNaN(num)) return null;
+  return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+}
+function makeClassChipStyle(colorHex) {
+  const rgb = hexToRgb(colorHex);
+  if (!rgb) return undefined;
+  const { r, g, b } = rgb;
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.12)`,
+    borderColor: `rgba(${r}, ${g}, ${b}, 0.35)`,
+    color: `rgb(${r}, ${g}, ${b})`,
+  };
+}
+
 export default function App() {
   const [state, setState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("balance");
-  const [group, setGroup] = useState("main"); // main | operations | info | other
+  const [group, setGroup] = useState("inventory"); // buyer | assembler | inventory | balance | settings
   const [error, setError] = useState("");
 
   async function refresh() {
@@ -40,7 +61,7 @@ export default function App() {
   async function dispatch(action) {
     try {
       if (action.type === "ADD_PART_CLASS") {
-        await api.addPartClass({ name: action.name });
+        await api.addPartClass({ name: action.name, color: action.color });
       } else if (action.type === "ADD_PART_TYPE") {
         await api.addPartType({
           classId: action.classId,
@@ -57,10 +78,10 @@ export default function App() {
           if (it.priceMode === "total") {
             const totalCost = Number(it.totalCost || 0);
             const unitCost = qty > 0 ? (totalCost / qty) : 0;
-            return { partTypeId: it.partTypeId, qty, unitCost };
+            return { partTypeId: it.partTypeId, qty, unitCost, note: (it.note || "").trim() };
           } else {
             const unitCost = Number(it.unitCost || 0);
-            return { partTypeId: it.partTypeId, qty, unitCost };
+            return { partTypeId: it.partTypeId, qty, unitCost, note: (it.note || "").trim() };
           }
         });
         const total = items.reduce((s, it) => s + it.qty * it.unitCost, 0);
@@ -70,11 +91,32 @@ export default function App() {
       } else if (action.type === "PAY_PURCHASE_FROM_BALANCE") {
         await api.payFromBalance(action.purchaseId);
       } else if (action.type === "ADD_ADDITIONAL_COST") {
-        await api.addAdditionalCost(action.purchaseId, {
+        const res = await api.addAdditionalCost(action.purchaseId, {
           amount: Number(action.amount),
           description: action.description,
           date: action.date || todayISO(),
         });
+        // Optimistic local update for the purchase row (no global refresh)
+        applyPartialState({
+          purchases: (state?.purchases || []).map((p) =>
+            p.id === action.purchaseId
+              ? {
+                  ...p,
+                  additionalCosts: [ ...(p.additionalCosts || []), res?.cost || { amount: Number(action.amount), description: action.description, date: action.date || todayISO() } ],
+                  total: res?.newTotal ?? (Number(p.total || 0) + Number(action.amount || 0)),
+                }
+              : p
+          ),
+        });
+        // If purchase already delivered and not a service, inventory/stock may change -> refresh only those
+        try {
+          const updated = (state?.purchases || []).find(p => p.id === action.purchaseId);
+          if (updated?.delivered && !updated?.isService) {
+            const s = await api.getState();
+            applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+          }
+        } catch (_) { /* no-op */ }
+        return;
       } else if (action.type === "ADD_BALANCE_ENTRY") {
         const entry = {
           date: action.date || todayISO(),
@@ -84,6 +126,33 @@ export default function App() {
           tag: action.tag,
         };
         await api.addBalanceEntry(entry);
+      } else if (action.type === "UPDATE_BALANCE_ENTRY") {
+        await api.updateBalanceEntry(action.id, {
+          date: action.date,
+          type: action.entryType,
+          amount: action.amount != null ? Number(action.amount) : undefined,
+          note: action.note,
+          tag: action.tag,
+        });
+        // Optimistic local update
+        applyPartialState({ balanceEntries: (state?.balanceEntries||[]).map(e => e.id === action.id ? {
+          ...e,
+          date: action.date ?? e.date,
+          type: action.entryType ?? e.type,
+          amount: action.amount != null ? Number(action.amount) : e.amount,
+          note: action.note ?? e.note,
+          tag: action.tag ?? e.tag,
+        } : e) });
+        // background refresh for balance-dependent UI
+        try { const s = await api.getState(); applyPartialState({ balanceEntries: s.balanceEntries }); } catch(_){}
+        return;
+      } else if (action.type === "DELETE_BALANCE_ENTRY") {
+        await api.deleteBalanceEntry(action.id);
+        // Optimistic local removal
+        applyPartialState({ balanceEntries: (state?.balanceEntries||[]).filter(e => e.id !== action.id) });
+        // background refresh (state + purchases/inventory may change due to linked additionalCosts deletion)
+        try { const s = await api.getState(); applyPartialState({ ...s }); } catch(_){}
+        return;
       } else if (action.type === "ADD_PRODUCT") {
         await api.addProduct({
           name: action.name,
@@ -128,67 +197,68 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="sticky top-0 z-10 bg-white border-b">
-        <div className="max-w-[93.6rem] mx-auto flex items-center justify-between p-3">
-          <button className="flex items-center gap-2 group" onClick={() => { setGroup("main"); setTab("inventory"); }}>
-            <BatteryFull className="w-6 h-6" />
-            <div className="font-semibold group-hover:underline">FPV Batteries – Склад</div>
+        <div className="max-w-[110rem] mx-auto flex items-center justify-between p-3">
+          <button className="flex items-center gap-3 group" onClick={() => { setGroup("inventory"); setTab("inventory"); }}>
+            <img src="/photo_2024-10-10_14-01-19.jpg" alt="NEBO" className="h-6 w-6 object-cover rounded" />
+            <div className="font-semibold group-hover:underline">NEBO Warehouse</div>
           </button>
-          <nav className="flex gap-1 overflow-x-auto">
-            <GroupTabBtn id="main" group={group} setGroup={setGroup} setTab={setTab}>Головне</GroupTabBtn>
-            <GroupTabBtn id="operations" group={group} setGroup={setGroup} setTab={setTab}>Операції</GroupTabBtn>
-            <GroupTabBtn id="info" group={group} setGroup={setGroup} setTab={setTab}>Інфо</GroupTabBtn>
-            <GroupTabBtn id="other" group={group} setGroup={setGroup} setTab={setTab}>Інше</GroupTabBtn>
+          <nav className="flex gap-1 overflow-x-auto items-center">
+            <GroupTabBtn id="buyer" group={group} setGroup={setGroup} setTab={setTab}>
+              <span className="flex items-center gap-2">
+                <span className="inline-flex items-center">
+                  <UserRound className="w-4 h-4" />
+                  <DollarSign className="w-3 h-3 -ml-1 text-green-600" />
+                </span>
+                Закупівельник
+              </span>
+            </GroupTabBtn>
+            <GroupTabBtn id="assembler" group={group} setGroup={setGroup} setTab={setTab}>
+              <span className="flex items-center gap-2"><UserCog className="w-4 h-4" /> Збірник</span>
+            </GroupTabBtn>
+            <div className="w-[2px] h-8 bg-gray-300 mx-4 rounded-full shadow-sm self-center" />
+            <GroupTabBtn id="inventory" group={group} setGroup={setGroup} setTab={setTab}>
+              <span className="flex items-center gap-2"><Warehouse className="w-4 h-4" /> Склад</span>
+            </GroupTabBtn>
+            <GroupTabBtn id="balance" group={group} setGroup={setGroup} setTab={setTab}>
+              <span className="flex items-center gap-2"><Coins className="w-4 h-4" /> Баланс</span>
+            </GroupTabBtn>
+            <GroupTabBtn id="settings" group={group} setGroup={setGroup} setTab={setTab}>
+              <Settings className="w-4 h-4" />
+            </GroupTabBtn>
           </nav>
         </div>
       </header>
 
-      <div className="max-w-[93.6rem] mx-auto p-4 grid md:grid-cols-[220px_1fr] gap-4">
-        <aside className="bg-white border rounded-2xl p-3 h-max sticky top-16">
-          {group === "main" && (
-            <>
-              <div className="text-xs uppercase text-gray-500 mb-2">Головне</div>
-              <div className="grid gap-1">
-                <TabBtn icon={Warehouse} id="inventory" tab={tab} setTab={setTab}>Склад</TabBtn>
-                <TabBtn icon={Coins} id="balance" tab={tab} setTab={setTab}>Баланс</TabBtn>
-              </div>
-            </>
-          )}
-          {group === "operations" && (
-            <>
-              <div className="text-xs uppercase text-gray-500 mb-2">Операції</div>
-              <div className="grid gap-1">
-                <TabBtn icon={ShoppingCart} id="purchases" tab={tab} setTab={setTab}>Закупки</TabBtn>
-                <TabBtn icon={Factory} id="assembly" tab={tab} setTab={setTab}>Збірка</TabBtn>
-                <TabBtn icon={DollarSign} id="sales" tab={tab} setTab={setTab}>Продажі</TabBtn>
-              </div>
-            </>
-          )}
-          {group === "info" && (
-            <>
-              <div className="text-xs uppercase text-gray-500 mb-2">Інфо</div>
-              <div className="grid gap-1">
-                <TabBtn icon={Boxes} id="products" tab={tab} setTab={setTab}>Продукти</TabBtn>
-                <TabBtn icon={Package} id="parts" tab={tab} setTab={setTab}>Види деталей</TabBtn>
-                <TabBtn icon={Package} id="suppliers" tab={tab} setTab={setTab}>Постачальники</TabBtn>
-              </div>
-            </>
-          )}
-          {group === "other" && (
-            <>
-              <div className="text-xs uppercase text-gray-500 mb-2">Інше</div>
-              <div className="grid gap-1">
-                <TabBtn icon={Settings} id="settings" tab={tab} setTab={setTab}>Налаштування</TabBtn>
-              </div>
-            </>
-          )}
-        </aside>
+      <div className={`max-w-[110rem] mx-auto pt-2 pr-4 pl-4 pb-4 ${(['buyer','assembler'].includes(group)) ? 'grid md:grid-cols-[200px_1fr] gap-4' : ''}`}>
+        {group === 'buyer' && (
+          <aside className="bg-white border rounded-2xl p-3 h-max sticky top-16">
+            <div className="text-xs uppercase text-gray-500 mb-2">Закупівельник</div>
+            <div className="grid gap-1">
+              <TabBtn icon={ShoppingCart} id="purchases" tab={tab} setTab={setTab}>Закупки</TabBtn>
+              <TabBtn icon={DollarSign} id="sales" tab={tab} setTab={setTab}>Продажі</TabBtn>
+              <div className="h-[2px] bg-gray-200 my-2 rounded" />
+              <TabBtn icon={Package} id="suppliers" tab={tab} setTab={setTab}>Постачальники</TabBtn>
+            </div>
+          </aside>
+        )}
+        {group === 'assembler' && (
+          <aside className="bg-white border rounded-2xl p-3 h-max sticky top-16">
+            <div className="text-xs uppercase text-gray-500 mb-2">Збірник</div>
+            <div className="grid gap-1">
+              <TabBtn icon={Factory} id="assembly" tab={tab} setTab={setTab}>Збірка</TabBtn>
+              <div className="h-[2px] bg-gray-200 my-2 rounded" />
+              <TabBtn icon={Package} id="parts" tab={tab} setTab={setTab}>Види деталей</TabBtn>
+              <TabBtn icon={Boxes} id="products" tab={tab} setTab={setTab}>Види продуктів</TabBtn>
+            </div>
+          </aside>
+        )}
         <main className="space-y-6">
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
-          {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
+        {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
           {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} />}
-          {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
+        {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} />}
-          {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
+        {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
         {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
         {tab === "settings" && <SettingsView state={state} dispatch={dispatch} serverMode/>}
@@ -214,10 +284,12 @@ function TabBtn({ icon: Icon, id, tab, setTab, children }) {
 function Section({ title, icon: Icon, children, right }) {
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold flex items-center gap-2"><Icon className="w-5 h-5" /> {title}</h2>
-        <div>{right}</div>
-      </div>
+      {title ? (
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold flex items-center gap-2"><Icon className="w-5 h-5" /> {title}</h2>
+          <div>{right}</div>
+        </div>
+      ) : null}
       <div className="grid gap-3">{children}</div>
     </div>
   );
@@ -250,7 +322,7 @@ function Table({ columns, rows, empty = "Немає даних", fixed = false }
             <tr key={r.id || i} className="odd:bg-white even:bg-gray-50">
               {columns.map((c) => (
                 <td key={c.key} className={`p-3 border-b align-top break-words whitespace-normal ${c.tdClass || ''}`}>
-                  {typeof c.cell === 'function' ? c.cell(r) : r[c.key]}
+                  {typeof c.cell === 'function' ? c.cell(r, i) : r[c.key]}
                 </td>
               ))}
             </tr>
@@ -275,16 +347,69 @@ function BalanceView({ state, dispatch, balance }) {
   const [amount, setAmount] = useState(0);
   const [note, setNote] = useState("");
   const [type, setType] = useState("deposit");
+  const [editingId, setEditingId] = useState(null);
+  const [editDate, setEditDate] = useState(todayISO());
+  const [editType, setEditType] = useState("deposit");
+  const [editAmount, setEditAmount] = useState(0);
+  const [editNote, setEditNote] = useState("");
+  const [editTag, setEditTag] = useState("");
 
   const cols = [
     { key: "date", header: "Дата" },
-    { key: "type", header: "Тип", cell: (r) => (<div className="flex items-center gap-2"><Tag>{r.tag || r.type}</Tag></div>) },
-    { key: "amount", header: "Сума", cell: (r) => (
-      <span className={r.type === 'withdrawal' || r.type === 'purchase' ? 'text-red-600' : 'text-green-600'}>
-        {r.type === 'withdrawal' || r.type === 'purchase' ? '-' : '+'}{currency(r.amount)}
-      </span>
+    { key: "type", header: "Тип", cell: (r) => (
+      editingId === r.id ? (
+        <Select value={editType} onChange={setEditType}>
+          <option value="deposit">Вклад</option>
+          <option value="withdrawal">Виведення</option>
+          <option value="purchase">Покупка</option>
+          <option value="sale">Продаж</option>
+        </Select>
+      ) : (
+        <div className="flex items-center gap-2"><Tag>{r.tag || r.type}</Tag></div>
+      )
     ) },
-    { key: "note", header: "Нотатка" },
+    { key: "amount", header: "Сума", cell: (r) => (
+      editingId === r.id ? (
+        <NumberInput value={editAmount} onChange={setEditAmount} />
+      ) : (
+        <span className={r.type === 'withdrawal' || r.type === 'purchase' ? 'text-red-600' : 'text-green-600'}>
+          {r.type === 'withdrawal' || r.type === 'purchase' ? '-' : '+'}{currency(r.amount)}
+        </span>
+      )
+    ) },
+    { key: "note", header: "Нотатка", cell: (r) => (
+      editingId === r.id ? (
+        <TextInput value={editNote} onChange={setEditNote} />
+      ) : (
+        r.note || ''
+      )
+    ) },
+    { key: "actions", header: "—", thClass: "w-40", cell: (r) => (
+      editingId === r.id ? (
+        <div className="flex gap-2">
+          <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={() => {
+            dispatch({ type: 'UPDATE_BALANCE_ENTRY', id: r.id, date: editDate, entryType: editType, amount: Number(editAmount), note: editNote, tag: editTag });
+            setEditingId(null);
+          }}>Зберегти</button>
+          <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={() => setEditingId(null)}>Скасувати</button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={() => {
+            setEditingId(r.id);
+            setEditDate(r.date || todayISO());
+            setEditType(r.type);
+            setEditAmount(Number(r.amount || 0));
+            setEditNote(r.note || '');
+            setEditTag(r.tag || '');
+          }}>Редагувати</button>
+          <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={() => {
+            if (!confirm('Видалити транзакцію?')) return;
+            dispatch({ type: 'DELETE_BALANCE_ENTRY', id: r.id });
+          }}>Видалити</button>
+        </div>
+      )
+    ) },
   ];
 
   return (
@@ -314,6 +439,7 @@ function BalanceView({ state, dispatch, balance }) {
 
 function PartsView({ state, dispatch }) {
   const [className, setClassName] = useState("");
+  const [classColor, setClassColor] = useState("#e5e7eb");
   const [ptName, setPtName] = useState("");
   const [ptUnit, setPtUnit] = useState("pcs");
   const [ptClassId, setPtClassId] = useState(state.partClasses[0]?.id || "");
@@ -321,7 +447,15 @@ function PartsView({ state, dispatch }) {
   const [ptSku, setPtSku] = useState("");
   const [ptNote, setPtNote] = useState("");
 
-  const classCols = [{ key: "name", header: "Назва класу" }];
+  const classCols = [
+    { key: "name", header: "Назва класу" },
+    { key: "color", header: "Колір", cell: (r) => (
+      <span className="inline-flex items-center gap-2">
+        <span className="inline-block w-4 h-4 rounded border" style={{ backgroundColor: r.color || '#e5e7eb', borderColor: '#cbd5e1' }} />
+        <span className="text-xs text-gray-500">{r.color || '—'}</span>
+      </span>
+    )},
+  ];
 
   const typeCols = [
     { key: "name", header: "Назва виду" },
@@ -335,14 +469,18 @@ function PartsView({ state, dispatch }) {
   return (
     <div className="grid gap-6">
       <Section title="Класи деталей" icon={Package}>
-        <div className="grid md:grid-cols-3 gap-3">
+        <div className="grid md:grid-cols-4 gap-3">
           <TextInput value={className} onChange={setClassName} placeholder="Напр., Елементи, Нікелева стрічка, 3D-друк" />
+          <div className="flex items-center gap-2 border rounded-xl px-3 py-2 bg-white">
+            <span className="text-sm text-gray-600">Колір</span>
+            <input type="color" className="w-8 h-6 p-0 border-0 bg-transparent cursor-pointer" value={classColor} onChange={(e)=> setClassColor(e.target.value)} />
+          </div>
           <button
             className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
             onClick={() => {
               if (!className.trim()) return;
-              dispatch({ type: "ADD_PART_CLASS", name: className });
-              setClassName("");
+              dispatch({ type: "ADD_PART_CLASS", name: className, color: classColor });
+              setClassName(""); setClassColor("#e5e7eb");
             }}
           >
             <Plus className="w-4 h-4" /> Додати клас
@@ -490,13 +628,17 @@ function SuppliersView({ state, refresh }) {
 }
 
 function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
-  const [vendor, setVendor] = useState("");
+  const [vendorId, setVendorId] = useState("");
   const [date, setDate] = useState(todayISO());
   const [items, setItems] = useState([]);
   const [isService, setIsService] = useState(false);
   const [expandedPurchase, setExpandedPurchase] = useState(null);
   const [costAmount, setCostAmount] = useState("");
   const [costDescription, setCostDescription] = useState("");
+  const [showNewSupplier, setShowNewSupplier] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState("");
+  const [newSupplierWebsite, setNewSupplierWebsite] = useState("");
+  const [newSupplierForPurchaseId, setNewSupplierForPurchaseId] = useState(null);
   // Filters & sorting
   const [deliveryFilter, setDeliveryFilter] = useState("all"); // all | delivered | not_delivered
   const [paymentFilter, setPaymentFilter] = useState("all");   // all | paid | not_paid
@@ -531,12 +673,26 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   async function saveEditRow() {
     const id = editingId;
     if (!id) return;
+    // optimistic UI: apply local edits and exit edit mode immediately
+    applyPartialState({
+      purchases: state.purchases.map(p => p.id === id ? {
+        ...p,
+        vendor: editVendor,
+        date: editDate,
+        items: editItems.map(it => ({ ...it })),
+        additionalCosts: editCosts.map(c => ({ ...c })),
+      } : p)
+    });
+    setEditingId(null);
     try {
       await api.updatePurchase(id, { vendor: editVendor, date: editDate, items: editItems, additionalCosts: editCosts });
+      // also refresh inventory/stock snapshot in background
+      const s = await api.getState();
+      applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+    } catch (e) {
+      // fallback to server truth on error
       const s = await api.getState();
       applyPartialState({ purchases: s.purchases, inventory: s.inventory, productStock: s.productStock });
-      setEditingId(null);
-    } catch (e) {
       alert(String(e));
     }
   }
@@ -725,12 +881,14 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }, 0);
 
   function addRow() {
-    const defaultPart = state.partTypes[0]?.id || "";
+    const defaultClass = state.partClasses[0]?.id || "";
+    const defaultType = state.partTypes.find(t => t.classId === defaultClass)?.id || state.partTypes[0]?.id || "";
     setItems((x) => [
       ...x,
       {
         tempId: Math.random().toString(36).slice(2),
-        partTypeId: defaultPart,
+        classId: defaultClass,
+        partTypeId: defaultType,
         qty: 0,
         priceMode: "unit",  // "unit" | "total"
         unitCost: 0,        // використовується якщо priceMode === "unit"
@@ -745,20 +903,46 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     setItems((x) => x.filter((r) => r.tempId !== tempId));
   }
 
+  const hasIncompleteRow = useMemo(() => {
+    if (items.length === 0) return false;
+    return items.some((r) => {
+      const qty = Number(r.qty || 0);
+      if (!r.partTypeId || qty <= 0) return true;
+      if (r.priceMode === 'unit') return Number(r.unitCost || 0) <= 0;
+      return Number(r.totalCost || 0) <= 0;
+    });
+  }, [items]);
+
   const cols = [
+    { key: "idx", header: "#", thClass: "w-10", cell: (r, idx) => <span className="text-gray-500">{idx + 1}</span> },
     { key: "date", header: "Дата", thClass: "w-28" },
-    { key: "vendor", header: "Постачальник", thClass: "w-64" },
-    { key: "items", header: "Позиції", cell: (r) => {
+    { key: "vendor", header: "Постачальник", thClass: "w-44", cell: (r) => (
+      editingId === r.id ? (
+        <div className="flex items-center gap-2">
+          <select
+            className="border rounded-xl px-2 py-1 bg-white"
+            value={editVendor}
+            onChange={(e)=> setEditVendor(e.target.value)}
+          >
+            <option value="">— Постачальник —</option>
+            {(state.suppliers||[]).map(s => (<option key={s.id} value={s.name}>{s.name}</option>))}
+          </select>
+          <button className="px-2 py-1 rounded-xl border text-xs hover:bg-gray-50" onClick={()=>{ setNewSupplierForPurchaseId(r.id); setShowNewSupplier(true); }}>Новий</button>
+        </div>
+      ) : (
+        <button className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-700 hover:bg-gray-100" onClick={()=> setVendorQuery((r.vendor||"").trim())}>{r.vendor || "—"}</button>
+      )
+    ) },
+    { key: "items", header: "Позиції", thClass: "w-[30%]", tdClass: "w-[30%]", cell: (r) => {
       const additionalCosts = r.additionalCosts || [];
       const itemsTotal = r.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
       const costsTotal = additionalCosts.reduce((s, c) => s + Number(c.amount || 0), 0);
 
       return (
-        <div className="text-sm text-gray-700 space-y-1">
+        <div className="text-sm text-gray-700 space-y-3">
           {r.items.map((it) => {
             const part = partById(it.partTypeId);
             const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
-            // allocate additional costs proportionally by item value
             const baseValue = Number(it.qty || 0) * Number(it.unitCost || 0);
             const share = itemsTotal > 0 ? (baseValue / itemsTotal) * costsTotal : 0;
             const effectiveUnit = Number(it.qty || 0) > 0 ? (Number(it.unitCost || 0) + share / Number(it.qty || 0)) : Number(it.unitCost || 0);
@@ -767,21 +951,20 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             return (
               <div key={it.id} className="space-y-1">
                 <div>
-                  • <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}
+                  <button
+                    className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+                    style={makeClassChipStyle(partClass?.color)}
+                    onClick={()=> setClassFilter(partClass?.id || '')}
+                  >{partClass?.name || "?"}</button>
+                </div>
+                <div>
+                  <button className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100" onClick={()=> setTypeFilter(part?.id || '')}>{part?.name || "?"}</button>
                 </div>
                 {isEditing ? (
                   <div className="flex items-center gap-2">
-                    <NumberInput
-                      className="w-20"
-                      value={(editItems.find(x=>x.id===it.id)||{}).qty ?? it.qty}
-                      onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, qty: Number(v) }: x))}
-                    />
+                    <NumberInput className="w-20" value={(editItems.find(x=>x.id===it.id)||{}).qty ?? it.qty} onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, qty: Number(v) }: x))} />
                     <span className="text-gray-500">×</span>
-                    <NumberInput
-                      className="w-20"
-                      value={(editItems.find(x=>x.id===it.id)||{}).unitCost ?? it.unitCost}
-                      onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, unitCost: Number(v) }: x))}
-                    />
+                    <NumberInput className="w-20" value={(editItems.find(x=>x.id===it.id)||{}).unitCost ?? it.unitCost} onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, unitCost: Number(v) }: x))} />
                     <span className="text-xs text-gray-500">= {currency(((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).qty) * ((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).unitCost + (share/( (editItems.find(x=>x.id===it.id)||{qty:it.qty}).qty || 1))))}</span>
                   </div>
                 ) : (
@@ -790,36 +973,19 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               </div>
             );
           })}
-          {!r.isService && (
-            <div className="mt-2 pt-2 border-t border-gray-200 space-y-2">
-              <div className="text-xs font-semibold text-gray-600">Додаткові витрати:</div>
-              {editingId === r.id ? (
-                <div className="space-y-2">
-                  {editCosts.map((c) => (
-                    <div key={c.id} className="space-y-1">
-                      <div className="text-sm text-gray-700">{c.description}</div>
-                      <div className="flex items-center gap-2">
-                        <NumberInput className="w-24" value={c.amount} onChange={(v)=>updateCostRow(c.id,{ amount: Number(v) })} placeholder="Сума" />
-                        <button className="p-2 rounded-lg hover:bg-gray-100" onClick={()=>removeCostRow(c.id)}><Trash2 className="w-4 h-4"/></button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                additionalCosts.length > 0 && (
-                  <div className="space-y-1">
-                    {additionalCosts.map((c) => (
-                      <div key={c.id} className="text-blue-700">+ {c.description}: <b>{currency(c.amount)}</b></div>
-                    ))}
-                  </div>
-                )
-              )}
-            </div>
-          )}
         </div>
       );
     } },
-    { key: "total", header: "Сума", thClass: "w-28", cell: (r) => {
+    { key: "note", header: "Нотатка", thClass: "w-[34%]", cell: (r) => {
+      const notes = (r.items || []).map(it => (it.note || '').trim()).filter(Boolean);
+      if (notes.length === 0) return '—';
+      return (
+        <div className="text-xs text-gray-600 space-y-1">
+          {notes.map((n, i) => (<div key={i}>• {n}</div>))}
+        </div>
+      );
+    } },
+    { key: "total", header: "Сума", thClass: "w-24", cell: (r) => {
       const itemsTotal = r.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
       const additionalCosts = r.additionalCosts || [];
       const costsTotal = additionalCosts.reduce((s, c) => s + Number(c.amount || 0), 0);
@@ -828,18 +994,27 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       return (
         <div>
           <div className="font-bold">{currency(total)}</div>
-          {costsTotal > 0 && (
+          {additionalCosts.length > 0 && (
             <div className="text-xs text-gray-500">
-              ({currency(itemsTotal)} + {currency(costsTotal)})
+              <span>{currency(itemsTotal)}</span>
+              {additionalCosts.map((c, idx) => (
+                <span key={c.id || idx}> + {Number(c.amount || 0).toFixed(2)} грн {c.description || ''}</span>
+              ))}
             </div>
           )}
         </div>
       );
     }},
-    { key: "status", header: "Статус", thClass: "w-40", cell: (r) => (
+    { key: "status", header: "Статус", thClass: "w-48", cell: (r) => (
       <div className="flex gap-2 items-center">
-        {!r.isService && (r.delivered ? <Tag>Доставлено</Tag> : <Tag>В дорозі</Tag>)}
-        {r.paidFromBalance ? <Tag>Оплачено</Tag> : <Tag>Не оплачено</Tag>}
+        {!r.isService && (
+          r.delivered
+            ? <button className="px-2 py-0.5 rounded-full text-xs bg-green-50 border border-green-200 text-green-700 whitespace-nowrap" onClick={()=> setDeliveryFilter('delivered')}>Доставлено</button>
+            : <button className="px-2 py-0.5 rounded-full text-xs bg-rose-100 border border-rose-300 text-rose-700 whitespace-nowrap" onClick={()=> setDeliveryFilter('not_delivered')}>В дорозі</button>
+        )}
+        {r.paidFromBalance
+          ? <button className="px-2 py-0.5 rounded-full text-xs bg-green-50 border border-green-200 text-green-700 whitespace-nowrap" onClick={()=> setPaymentFilter('paid')}>Оплачено</button>
+          : <button className="px-2 py-0.5 rounded-full text-xs bg-rose-100 border border-rose-300 text-rose-700 whitespace-nowrap" onClick={()=> setPaymentFilter('not_paid')}>Не оплачено</button>}
         {r.isService && (
           <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 border border-purple-300 text-purple-800">Послуги</span>
         )}
@@ -978,16 +1153,21 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   ];
 
   return (
-    <div className="space-y-6">
-      <Section title="Нова закупка" icon={ShoppingCart}>
+    <div className="space-y-2">
+      <Section title="" icon={ShoppingCart}>
         {state.partTypes.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку додайте <b>Види деталей</b>.</div>
         ) : (
           <div className="grid gap-3">
-            <div className="grid md:grid-cols-3 gap-3 items-center">
-              <TextInput value={vendor} onChange={setVendor} placeholder="Постачальник" />
-              <input type="date" className="border rounded-xl px-3 py-2" value={date} onChange={(e) => setDate(e.target.value)} />
-              <div className="flex items-center gap-3 ml-auto">
+            {items.length === 0 ? (
+              <div className="flex items-center justify-end py-2">
+                <button className="rounded-xl bg-gray-900 text-white px-5 py-3 flex items-center gap-2" onClick={addRow}>
+                  <Plus className="w-4 h-4"/> Додати позицію
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <input type="date" className="border rounded-xl px-3 py-2" value={date} onChange={(e) => setDate(e.target.value)} />
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" className="scale-110" checked={isService} onChange={(e) => setIsService(e.target.checked)} />
                   Послуги
@@ -1003,15 +1183,22 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                     <Info className="w-4 h-4 text-gray-500" />
                   </span>
                 </label>
-                <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={addRow}><Plus className="w-4 h-4"/> Додати позицію</button>
+                <button
+                  className={`rounded-xl px-4 py-2 ml-auto flex items-center gap-2 ${hasIncompleteRow ? 'bg-gray-400 text-white cursor-not-allowed' : 'bg-gray-900 text-white'}`}
+                  onClick={() => { if (!hasIncompleteRow) addRow(); }}
+                  disabled={hasIncompleteRow}
+                >
+                  <Plus className="w-4 h-4"/> Додати позицію
+                </button>
               </div>
-            </div>
+            )}
 
             {items.length > 0 && (
               <div className="overflow-x-auto border rounded-2xl bg-white">
                 <table className="min-w-full text-sm">
                   <thead className="bg-gray-50">
                     <tr>
+                      <th className="p-2 text-left">Клас</th>
                       <th className="p-2 text-left">Деталь</th>
                       <th className="p-2 text-left">Кількість</th>
                       <th className="p-2 text-left">Тип ціни</th>
@@ -1024,8 +1211,17 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                     {items.map((row) => (
                       <tr key={row.tempId} className="odd:bg-white even:bg-gray-50">
                         <td className="p-2">
+                          <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.classId} onChange={(e) => {
+                            const nextClass = e.target.value;
+                            const firstType = state.partTypes.find(t => t.classId === nextClass)?.id || "";
+                            updateRow(row.tempId, { classId: nextClass, partTypeId: firstType });
+                          }}>
+                            {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                          </select>
+                        </td>
+                        <td className="p-2">
                           <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.partTypeId} onChange={(e) => updateRow(row.tempId, { partTypeId: e.target.value })}>
-                            {state.partTypes.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                            {state.partTypes.filter(p => !row.classId || p.classId === row.classId).map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
                           </select>
                         </td>
                         <td className="p-2">
@@ -1073,32 +1269,65 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               </div>
             )}
 
-            <div className="flex items-center justify-between">
-              <div className="text-lg">Разом: <b>{currency(total)}</b></div>
-              <button
-                className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center gap-2"
-                onClick={() => {
-                  if (items.length === 0) return;
-                  const valid = items.every((r) => {
-                    const qty = Number(r.qty || 0);
-                    if (!r.partTypeId || qty <= 0) return false;
-                    if (r.priceMode === "total") {
-                      return Number(r.totalCost || 0) >= 0;
-                    }
-                    return Number(r.unitCost || 0) >= 0;
-                  });
-                  if (!valid) return;
-                  dispatch({ type: "ADD_PURCHASE", vendor, date, items, isService });
-                  setVendor(""); setDate(todayISO()); setItems([]); setIsService(false);
-                }}
-              ><Save className="w-4 h-4" /> Зберегти закупку</button>
-            </div>
+            {items.length > 0 && (
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-semibold">{currency(total)}</div>
+                <div className="flex items-center gap-3">
+                  <select className="border rounded-xl px-2 py-1 bg-white" value={vendorId} onChange={(e)=> setVendorId(e.target.value)}>
+                    <option value="">— Оберіть постачальника —</option>
+                    {(state.suppliers||[]).map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                  </select>
+                  <button className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50" onClick={()=> setShowNewSupplier(true)}>Створити нового</button>
+                  <button
+                    className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center gap-2"
+                    onClick={() => {
+                      if (items.length === 0) return;
+                      const valid = items.every((r) => {
+                        const qty = Number(r.qty || 0);
+                        if (!r.partTypeId || qty <= 0) return false;
+                        if (r.priceMode === "total") {
+                          return Number(r.totalCost || 0) >= 0;
+                        }
+                        return Number(r.unitCost || 0) >= 0;
+                      });
+                      if (!valid) return;
+                      const vendorName = (state.suppliers||[]).find(s=>s.id===vendorId)?.name || "";
+                      dispatch({ type: "ADD_PURCHASE", vendor: vendorName, date, items, isService });
+                      setVendorId(""); setDate(todayISO()); setItems([]); setIsService(false);
+                    }}
+                  ><Save className="w-4 h-4" /> Зберегти закупку</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Section>
 
-      <Section
-        title="Історія закупок"
+      {showNewSupplier && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border p-4 w-full max-w-md space-y-3">
+            <div className="text-lg font-semibold">Новий постачальник</div>
+            <TextInput value={newSupplierName} onChange={setNewSupplierName} placeholder="Назва" />
+            <TextInput value={newSupplierWebsite} onChange={setNewSupplierWebsite} placeholder="Вебсайт (https://...)" />
+            <div className="flex items-center justify-end gap-2">
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowNewSupplier(false)}>Скасувати</button>
+              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async()=>{
+                if (!newSupplierName.trim()) return;
+                try {
+                  const s = await api.addSupplier({ name: newSupplierName.trim(), website: newSupplierWebsite.trim() });
+                  setVendorId(s.id);
+                  setNewSupplierName(""); setNewSupplierWebsite(""); setShowNewSupplier(false);
+                  await refresh();
+                } catch(e){ alert(String(e)); }
+              }}>Створити</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-0">
+        <Section
+          title="Історія закупок"
         icon={ShoppingCart}
         right={(
           <button
@@ -1274,7 +1503,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             </button>
           </div>
         )}
-      </Section>
+        </Section>
+      </div>
     </div>
   );
 }
@@ -1329,7 +1559,7 @@ function ProductsView({ state, dispatch }) {
 
   function addRow() {
     const defaultPart = state.partTypes[0]?.id || "";
-    setRows((x) => [...x, { id: Math.random().toString(36).slice(2), partTypeId: defaultPart, qty: 0 }]);
+    setRows((x) => [...x, { id: Math.random().toString(36).slice(2), partTypeId: defaultPart, qty: 0, note: "" }]);
   }
   function updateRow(id, patch) {
     setRows((x) => x.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -1373,6 +1603,7 @@ function ProductsView({ state, dispatch }) {
                     <th className="p-2 text-left">Кількість на 1 од.</th>
                     <th className="p-2 text-left">Сер. собівартість</th>
                     <th className="p-2 text-left">Внесок у ціну</th>
+                    <th className="p-2 text-left">Нотатка</th>
                     <th className="p-2 text-left">—</th>
                   </tr>
                 </thead>
@@ -1391,6 +1622,7 @@ function ProductsView({ state, dispatch }) {
                         <td className="p-2"><NumberInput value={r.qty} onChange={(v) => updateRow(r.id, { qty: Number(v) })} /></td>
                         <td className="p-2">{currency(avg)}</td>
                         <td className="p-2 font-medium">{currency(avg * Number(r.qty || 0))}</td>
+                        <td className="p-2"><TextInput value={r.note} onChange={(v)=> updateRow(r.id, { note: v })} placeholder="Нотатка" /></td>
                         <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeRow(r.id)}><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
                     );
@@ -1576,6 +1808,16 @@ function SettingsView({ state, dispatch, serverMode }) {
       alert("Склад та залишки перераховано. Оновіть сторінку для відображення.");
     }
   }
+  async function fixPurchaseTotals() {
+    try {
+      const result = await api.fixPurchaseTotals();
+      alert(`Виправлено ${result.fixed_count} закупок. Сторінка оновиться.`);
+      // eslint-disable-next-line no-restricted-globals
+      location.reload();
+    } catch (e) {
+      alert(`Помилка: ${String(e)}`);
+    }
+  }
 
   return (
     <Section title="Налаштування та дані" icon={Settings}>
@@ -1585,6 +1827,9 @@ function SettingsView({ state, dispatch, serverMode }) {
         </button>
         <button className="rounded-xl border px-4 py-2 flex items-center gap-2 hover:bg-gray-50" onClick={rebuild}>
           <Wrench className="w-4 h-4" /> Перерахувати склад
+        </button>
+        <button className="rounded-xl border px-4 py-2 flex items-center gap-2 hover:bg-yellow-50 border-yellow-300 text-yellow-700" onClick={fixPurchaseTotals}>
+          <Wrench className="w-4 h-4" /> Виправити суми закупок
         </button>
         <button className="rounded-xl border px-4 py-2 flex items-center gap-2 cursor-not-allowed opacity-60" title="У серверному режимі імпорт ще не підключено">
           <Upload className="w-4 h-4" /> Імпорт JSON (н/д)
@@ -1604,12 +1849,15 @@ function GroupTabBtn({ id, group, setGroup, setTab, children }) {
   const active = group === id;
   function onClick() {
     setGroup(id);
-    // Select default tab per group
     if (setTab) {
-      if (id === 'main') setTab('inventory');
-      else if (id === 'operations') setTab('purchases');
-      else if (id === 'info') setTab('products');
-      else if (id === 'other') setTab('settings');
+      if (id === 'buyer') setTab('purchases');
+      else if (id === 'assembler') setTab('assembly');
+      else if (id === 'inventory') setTab('inventory');
+      else if (id === 'balance') setTab('balance');
+      else if (id === 'products') setTab('products');
+      else if (id === 'parts') setTab('parts');
+      else if (id === 'assembly') setTab('assembly');
+      else if (id === 'settings') setTab('settings');
     }
   }
   return (

@@ -19,6 +19,8 @@ export const api = {
   getState: () => http("GET", "/state"),
   listPurchases: () => http("GET", "/purchases"),
   addBalanceEntry: (e) => http("POST", "/balance/entries", e),
+  updateBalanceEntry: (id, o) => http("PUT", `/balance/entries/${id}`, o),
+  deleteBalanceEntry: (id) => http("DELETE", `/balance/entries/${id}`),
   addPartClass: (o) => http("POST", "/parts/classes", o),
   addPartType: (o) => http("POST", "/parts/types", o),
   addPurchase: (o) => http("POST", "/purchases", o),
@@ -32,6 +34,7 @@ export const api = {
   assemble: (o) => http("POST", "/assembly", o),
   sale: (o) => http("POST", "/sales", o),
   rebuild: () => http("POST", "/maintenance/rebuild"),
+  fixPurchaseTotals: () => http("POST", "/maintenance/fix-purchase-totals"),
   // Suppliers
   listSuppliers: () => http("GET", "/suppliers"),
   addSupplier: (o) => http("POST", "/suppliers", o),

@@ -203,6 +203,7 @@ class BalanceEntry(BaseModel):
 class PartClass(BaseModel):
     id: Optional[str] = None
     name: str
+    color: Optional[str] = None
 
 class PartType(BaseModel):
     id: Optional[str] = None
@@ -218,6 +219,7 @@ class PurchaseItem(BaseModel):
     partTypeId: str
     qty: float
     unitCost: float
+    note: Optional[str] = ""
 
 class AdditionalCost(BaseModel):
     id: Optional[str] = None
@@ -296,6 +298,82 @@ async def add_balance(entry: BalanceEntry):
     await c_balance.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+class UpdateBalanceEntryRequest(BaseModel):
+    date: Optional[str] = None
+    type: Optional[str] = None
+    amount: Optional[float] = None
+    note: Optional[str] = None
+    tag: Optional[str] = None
+
+@app.put("/balance/entries/{entry_id}")
+async def update_balance_entry(entry_id: str, body: UpdateBalanceEntryRequest):
+    b = await c_balance.find_one({"_id": entry_id})
+    if not b:
+        raise HTTPException(404, "Balance entry not found")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    await c_balance.update_one({"_id": entry_id}, {"$set": patch})
+    # No special rebuild needed; balance is computed on the fly. Other forms use balance only for display.
+    return {"ok": True}
+
+@app.delete("/balance/entries/{entry_id}")
+async def delete_balance_entry(entry_id: str):
+    b = await c_balance.find_one({"_id": entry_id})
+    if not b:
+        raise HTTPException(404, "Balance entry not found")
+    # If this balance entry is linked to a purchase additional cost, remove it too
+    ref_pid = b.get("refPurchaseId")
+    removed_cost = None
+    if ref_pid:
+        p = await c_purchases.find_one({"_id": ref_pid})
+        if p:
+            # First, try to remove by direct refAdditionalCostId if present
+            costs = p.get("additionalCosts", []) or []
+            match_idx = -1
+            ref_cost_id = b.get("refAdditionalCostId")
+            if ref_cost_id:
+                for i, c in enumerate(costs):
+                    if c.get("id") == ref_cost_id:
+                        match_idx = i
+                        break
+            # Fallback: detect by amount and description parsed from note
+            if match_idx < 0:
+                note = b.get("note", "") or ""
+                amount = float(b.get("amount", 0))
+                desc = None
+                if "Додаткові витрати (" in note:
+                    try:
+                        start = note.index("Додаткові витрати (") + len("Додаткові витрати (")
+                        end = note.index(")", start)
+                        desc = note[start:end]
+                    except Exception:
+                        desc = None
+                for i, c in enumerate(costs):
+                    ca = float(c.get("amount", 0))
+                    if abs(ca - amount) < 1e-9:
+                        if desc is None or (c.get("description") or "") == desc:
+                            match_idx = i
+                            break
+            if match_idx >= 0:
+                removed_cost = costs.pop(match_idx)
+                # Recompute purchase total
+                items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in p.get("items", [])])
+                costs_total = sum([float(c.get("amount", 0)) for c in costs])
+                new_total = items_total + costs_total
+                await c_purchases.update_one({"_id": ref_pid}, {"$set": {"additionalCosts": costs, "total": new_total}})
+                # If purchase already delivered and is not a service, roll back allocation by subtracting value
+                if p.get("delivered") and not p.get("isService") and removed_cost:
+                    removed_amount = float(removed_cost.get("amount", 0))
+                    if removed_amount != 0:
+                        items_total_for_alloc = items_total  # base for share
+                        if items_total_for_alloc > 0:
+                            for it in p.get("items", []):
+                                base_value = float(it.get("qty", 0)) * float(it.get("unitCost", 0)) / items_total_for_alloc
+                                share_amount = (-removed_amount) * base_value
+                                await add_value_to_inventory(it["partTypeId"], share_amount)
+    # Finally delete the balance entry
+    await c_balance.delete_one({"_id": entry_id})
+    return {"ok": True}
 
 @app.get("/balance/value")
 async def balance_value():
@@ -537,6 +615,7 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
             "note": f"Додаткові витрати ({req.description}) для закупки {p.get('vendor') or '(без постачальника)'}",
             "tag": "Покупка",
             "refPurchaseId": purchase_id,
+            "refAdditionalCostId": cost["id"],
         }
         balance_entry["_id"] = balance_entry["id"]
         await c_balance.insert_one(balance_entry)
@@ -560,6 +639,41 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
 async def maintenance_rebuild():
     await rebuild_inventory_and_stock()
     return {"ok": True}
+
+@app.post("/maintenance/fix-purchase-totals")
+async def maintenance_fix_purchase_totals():
+    """
+    Recalculate all purchase totals and remove orphaned additional costs
+    (those that don't have a corresponding balance entry with refAdditionalCostId).
+    """
+    fixed_count = 0
+    async for p in c_purchases.find():
+        purchase_id = p.get("_id") or p.get("id")
+        items = p.get("items", [])
+        additional_costs = p.get("additionalCosts", []) or []
+
+        # Find all balance entries that reference this purchase
+        balance_entries = [x async for x in c_balance.find({"refPurchaseId": purchase_id})]
+        valid_cost_ids = {be.get("refAdditionalCostId") for be in balance_entries if be.get("refAdditionalCostId")}
+
+        # Filter out orphaned costs (those without a balance entry)
+        original_cost_count = len(additional_costs)
+        filtered_costs = [c for c in additional_costs if c.get("id") in valid_cost_ids] if valid_cost_ids else []
+
+        # Recalculate total
+        items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in items])
+        costs_total = sum([float(c.get("amount", 0)) for c in filtered_costs])
+        new_total = items_total + costs_total
+
+        # Update if anything changed
+        if filtered_costs != additional_costs or abs(float(p.get("total", 0)) - new_total) > 1e-9:
+            await c_purchases.update_one(
+                {"_id": purchase_id},
+                {"$set": {"additionalCosts": filtered_costs, "total": new_total}}
+            )
+            fixed_count += 1
+
+    return {"ok": True, "fixed_count": fixed_count}
 
 # --------- Admin updates ---------
 class ToggleServiceRequest(BaseModel):
