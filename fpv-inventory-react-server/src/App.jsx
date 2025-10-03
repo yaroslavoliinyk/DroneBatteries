@@ -527,6 +527,7 @@ function SuppliersView({ state, refresh }) {
   const [links, setLinks] = useState([]);
   const [classIds, setClassIds] = useState([]);
   const [typeIds, setTypeIds] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
 
   // inline edit state
   const [editingId, setEditingId] = useState(null);
@@ -539,6 +540,19 @@ function SuppliersView({ state, refresh }) {
 
   const classOptions = Array.isArray(state?.partClasses) ? state.partClasses : [];
   const typeOptions = Array.isArray(state?.partTypes) ? state.partTypes : [];
+  const filteredTypeOptionsForAdd = classIds.length > 0
+    ? typeOptions.filter(t => classIds.includes(t.classId))
+    : [];
+
+  // Keep selected typeIds consistent with chosen classes
+  useEffect(() => {
+    if (classIds.length === 0) {
+      setTypeIds([]);
+      return;
+    }
+    const allowed = new Set(typeOptions.filter(t => classIds.includes(t.classId)).map(t => t.id));
+    setTypeIds(ids => ids.filter(id => allowed.has(id)));
+  }, [classIds, typeOptions]);
 
   function addLink() { setLinks(x => [...x, { id: Math.random().toString(36).slice(2), title: "", url: "" }]); }
   function updateLink(id, patch) { setLinks(x => x.map(l => l.id === id ? { ...l, ...patch } : l)); }
@@ -586,6 +600,7 @@ function SuppliersView({ state, refresh }) {
     try {
       await api.addSupplier({ name, website, note, links, classIds, typeIds });
       setName(""); setWebsite(""); setNote(""); setLinks([]); setClassIds([]); setTypeIds([]);
+      setShowAdd(false);
       await refresh();
     } catch (e) {
       alert(String(e));
@@ -663,53 +678,74 @@ function SuppliersView({ state, refresh }) {
 
   return (
     <div className="space-y-6">
-      <Section title="Постачальники" icon={Package}>
-        <div className="grid gap-3">
-          <div className="grid md:grid-cols-3 gap-3">
-            <TextInput value={name} onChange={setName} placeholder="Назва" />
-            <TextInput value={website} onChange={setWebsite} placeholder="Вебсайт (https://...)" />
-            <TextInput value={note} onChange={setNote} placeholder="Нотатка" />
-          </div>
-          <div className="grid gap-2">
-            <div className="text-sm font-medium">Посилання</div>
-            {links.length === 0 && <div className="text-xs text-gray-500">Додайте посилання</div>}
-            {links.map(l => (
-              <div key={l.id} className="grid md:grid-cols-3 gap-2">
-                <TextInput value={l.title} onChange={(v)=>updateLink(l.id,{title:v})} placeholder="Назва (необов'язково)" />
-                <TextInput value={l.url} onChange={(v)=>updateLink(l.id,{url:v})} placeholder="URL" />
-                <button className="px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={()=>removeLink(l.id)}>Прибрати</button>
+      <Section
+        title="Постачальники"
+        icon={Package}
+        right={(
+          <button
+            className="rounded-xl border px-4 py-2 flex items-center gap-2 hover:bg-gray-50"
+            onClick={() => setShowAdd(v => !v)}
+          >
+            <Plus className="w-4 h-4" /> {showAdd ? 'Сховати' : 'Додати постачальника'}
+          </button>
+        )}
+      >
+        {showAdd && (
+          <div className="grid gap-3">
+            <div className="grid md:grid-cols-3 gap-3">
+              <TextInput value={name} onChange={setName} placeholder="Назва" />
+              <TextInput value={website} onChange={setWebsite} placeholder="Вебсайт (https://...)" />
+              <TextInput value={note} onChange={setNote} placeholder="Нотатка" />
+            </div>
+            <div className="grid gap-2">
+              <div className="text-sm font-medium">Посилання</div>
+              {links.length === 0 && <div className="text-xs text-gray-500">Додайте посилання</div>}
+              {links.map(l => (
+                <div key={l.id} className="grid md:grid-cols-3 gap-2">
+                  <TextInput value={l.title} onChange={(v)=>updateLink(l.id,{title:v})} placeholder="Назва (необов'язково)" />
+                  <TextInput value={l.url} onChange={(v)=>updateLink(l.id,{url:v})} placeholder="URL" />
+                  <button className="px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={()=>removeLink(l.id)}>Прибрати</button>
+                </div>
+              ))}
+              <button className="w-max px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={addLink}>+ Додати посилання</button>
+            </div>
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
+                <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
+                  {classOptions.map(c => (
+                    <label key={c.id} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" className="scale-110" checked={classIds.includes(c.id)} onChange={(e)=> setClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
+                      {c.name}
+                    </label>
+                  ))}
+                </div>
               </div>
-            ))}
-            <button className="w-max px-3 py-2 rounded-xl border text-sm hover:bg-gray-50" onClick={addLink}>+ Додати посилання</button>
-          </div>
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Класи товарів</div>
-              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-                {classOptions.map(c => (
-                  <label key={c.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" className="scale-110" checked={classIds.includes(c.id)} onChange={(e)=> setClassIds(x => e.target.checked ? [...x, c.id] : x.filter(id=>id!==c.id)) } />
-                    {c.name}
-                  </label>
-                ))}
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Види товарів</div>
+                {classIds.length === 0 ? (
+                  <div className="text-xs text-gray-500 p-2 border rounded-xl bg-white">— спочатку оберіть клас(и)</div>
+                ) : (
+                  <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
+                    {filteredTypeOptionsForAdd.map(t => (
+                      <label key={t.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" className="scale-110" checked={typeIds.includes(t.id)} onChange={(e)=> setTypeIds(x => e.target.checked ? [...x, t.id] : x.filter(id=>id!==t.id)) } />
+                        {t.name}
+                      </label>
+                    ))}
+                    {filteredTypeOptionsForAdd.length === 0 && (
+                      <div className="text-xs text-gray-500">— для вибраних класів немає видів</div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Види товарів</div>
-              <div className="grid gap-2 max-h-48 overflow-auto p-2 border rounded-xl bg-white">
-                {typeOptions.map(t => (
-                  <label key={t.id} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" className="scale-110" checked={typeIds.includes(t.id)} onChange={(e)=> setTypeIds(x => e.target.checked ? [...x, t.id] : x.filter(id=>id!==t.id)) } />
-                    {t.name}
-                  </label>
-                ))}
-              </div>
+            <div className="flex gap-2">
+              <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={saveSupplier}><Save className="w-4 h-4"/> Зберегти постачальника</button>
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=>{ setShowAdd(false); }}>Скасувати</button>
             </div>
           </div>
-          <div className="flex">
-            <button className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2" onClick={saveSupplier}><Save className="w-4 h-4"/> Зберегти постачальника</button>
-          </div>
-        </div>
+        )}
       </Section>
 
       <Section title="Список постачальників" icon={Package}>
