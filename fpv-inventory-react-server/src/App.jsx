@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil, Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap } from "lucide-react";
 import api from "./api";
 
 /**
@@ -61,7 +61,7 @@ export default function App() {
   async function dispatch(action) {
     try {
       if (action.type === "ADD_PART_CLASS") {
-        await api.addPartClass({ name: action.name, color: action.color });
+        await api.addPartClass({ name: action.name, color: action.color, icon: action.icon });
       } else if (action.type === "ADD_PART_TYPE") {
         await api.addPartType({
           classId: action.classId,
@@ -70,11 +70,13 @@ export default function App() {
           manufacturer: action.manufacturer,
           sku: action.sku,
           note: action.note,
+          runningLowThreshold: action.runningLowThreshold,
         });
       } else if (action.type === "UPDATE_PART_CLASS") {
         await api.updatePartClass(action.id, {
           name: action.name,
           color: action.color,
+          icon: action.icon,
         });
       } else if (action.type === "DELETE_PART_CLASS") {
         await api.deletePartClass(action.id);
@@ -86,6 +88,8 @@ export default function App() {
           manufacturer: action.manufacturer,
           sku: action.sku,
           note: action.note,
+          runningLow: action.runningLow,
+          runningLowThreshold: action.runningLowThreshold,
         });
       } else if (action.type === "DELETE_PART_TYPE") {
         await api.deletePartType(action.id);
@@ -275,7 +279,7 @@ export default function App() {
         {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
         {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
-        {tab === "inventory" && <InventoryView state={state} />}
+        {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
         {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
@@ -457,16 +461,20 @@ function BalanceView({ state, dispatch, balance }) {
 
 function PartsView({ state, dispatch }) {
   const [className, setClassName] = useState("");
-  const [classColor, setClassColor] = useState("#e5e7eb");
+  const [classColor, setClassColor] = useState("");
+  const [classIcon, setClassIcon] = useState("");
   const [classEditingId, setClassEditingId] = useState(null);
   const [editClassName, setEditClassName] = useState("");
-  const [editClassColor, setEditClassColor] = useState("#e5e7eb");
+  const [editClassColor, setEditClassColor] = useState("");
+  const [editClassIcon, setEditClassIcon] = useState("");
   const [ptName, setPtName] = useState("");
   const [ptUnit, setPtUnit] = useState("pcs");
+  const [ptThreshold, setPtThreshold] = useState("");
   const [ptClassId, setPtClassId] = useState(state.partClasses[0]?.id || "");
   const [ptMan, setPtMan] = useState("");
   const [ptSku, setPtSku] = useState("");
   const [ptNote, setPtNote] = useState("");
+  const [showAddType, setShowAddType] = useState(false);
 
   // Filters for part types
   const [showFilters, setShowFilters] = useState(false);
@@ -476,6 +484,16 @@ function PartsView({ state, dispatch }) {
 
   const classOptions = Array.isArray(state?.partClasses) ? state.partClasses : [];
   const typeOptions = Array.isArray(state?.partTypes) ? state.partTypes : [];
+
+  // Small icon registry for classes
+  const ICONS = {
+    Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
+  };
+  const iconChoices = Object.keys(ICONS);
+  function renderClassIcon(name) {
+    const IconComp = (name && ICONS[name]) || Package;
+    return <IconComp className="w-4 h-4 mx-auto my-auto" />;
+  }
   const filteredTypeOptionsByFilter = filterClassId
     ? typeOptions.filter(t => t.classId === filterClassId)
     : typeOptions;
@@ -506,31 +524,37 @@ function PartsView({ state, dispatch }) {
 
   const classCols = [
     { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
-    { key: "name", header: "Назва класу", cell: (r) => (
-      classEditingId === r.id ? (
-        <TextInput value={editClassName} onChange={setEditClassName} placeholder="Назва класу" />
-      ) : r.name
-    ) },
-    { key: "color", header: "Колір", cell: (r) => (
+    { key: "name", header: "Клас", cell: (r) => (
       classEditingId === r.id ? (
         <div className="flex items-center gap-2">
-          <input type="color" className="w-8 h-6 p-0 border-0 bg-transparent cursor-pointer" value={editClassColor} onChange={(e)=> setEditClassColor(e.target.value)} />
-          <span className="text-xs text-gray-500">{editClassColor}</span>
+          <div className="relative">
+            <select className="border rounded-xl px-3 py-2 bg-white" value={editClassIcon} onChange={(e)=> setEditClassIcon(e.target.value)}>
+              <option value="">— Іконка —</option>
+              {iconChoices.map(k => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+            {editClassIcon && (
+              <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">
+                {renderClassIcon(editClassIcon)}
+              </div>
+            )}
+          </div>
+          <TextInput value={editClassName} onChange={setEditClassName} placeholder="Назва класу" />
         </div>
       ) : (
         <span className="inline-flex items-center gap-2">
-          <span className="inline-block w-4 h-4 rounded border" style={{ backgroundColor: r.color || '#e5e7eb', borderColor: '#cbd5e1' }} />
-          <span className="text-xs text-gray-500">{r.color || '—'}</span>
+          {renderClassIcon(r.icon)} {r.name}
         </span>
       )
-    )},
+    ) },
     { key: "actions", header: "—", thClass: "w-28", cell: (r) => (
       <div className="flex items-center gap-2">
         {classEditingId === r.id ? (
           <>
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
               try {
-                await dispatch({ type: 'UPDATE_PART_CLASS', id: r.id, name: editClassName.trim() || r.name, color: editClassColor });
+                await dispatch({ type: 'UPDATE_PART_CLASS', id: r.id, name: editClassName.trim() || r.name, color: undefined, icon: editClassIcon || undefined });
                 setClassEditingId(null);
               } catch(e) { alert(String(e)); }
             }}>Зберегти</button>
@@ -538,7 +562,7 @@ function PartsView({ state, dispatch }) {
           </>
         ) : (
           <>
-            <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> { setClassEditingId(r.id); setEditClassName(r.name||''); setEditClassColor(r.color||'#e5e7eb'); }}><Pencil className="w-4 h-4"/></button>
+            <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> { setClassEditingId(r.id); setEditClassName(r.name||''); setEditClassColor(r.color||''); setEditClassIcon(r.icon||''); }}><Pencil className="w-4 h-4"/></button>
             <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
               if (!confirm('Видалити клас? Якщо є прив\'язані види — видалення неможливе.')) return;
               try { await dispatch({ type: 'DELETE_PART_CLASS', id: r.id }); } catch(e) { alert(String(e)); }
@@ -557,6 +581,7 @@ function PartsView({ state, dispatch }) {
   const [editTypeMan, setEditTypeMan] = useState("");
   const [editTypeSku, setEditTypeSku] = useState("");
   const [editTypeNote, setEditTypeNote] = useState("");
+  const [editTypeThreshold, setEditTypeThreshold] = useState("");
 
   const typeCols = [
     { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
@@ -574,16 +599,32 @@ function PartsView({ state, dispatch }) {
           const style = makeClassChipStyle(cls?.color);
           return (
             <button
-              className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+              className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50 inline-flex items-center gap-1"
               style={style}
               onClick={(e)=>{ e.preventDefault(); setFilterClassId(r.classId); setFilterTypeId(""); setShowFilters(true); }}
-            >{cls?.name || r.classId || '—'}</button>
+            >{renderClassIcon(cls?.icon)} {cls?.name || r.classId || '—'}</button>
           );
         })()
       )
     ) },
     { key: "unit", header: "Одиниця", cell: (r) => (
       typeEditingId === r.id ? (<TextInput value={editTypeUnit} onChange={setEditTypeUnit} placeholder="pcs/m/cm" />) : r.unit
+    ) },
+    { key: "threshold", header: "Поріг (pcs)", cell: (r) => (
+      typeEditingId === r.id ? (
+        editTypeUnit === 'pcs' ? (
+          <input type="number" min="0" step="1" className="w-full border rounded-xl px-3 py-2" value={editTypeThreshold} onChange={(e)=> setEditTypeThreshold(e.target.value)} placeholder="напр., 5" />
+        ) : (
+          <span className="text-xs text-gray-500">—</span>
+        )
+      ) : (
+        r.unit === 'pcs' ? (r.runningLowThreshold ?? '—') : '—'
+      )
+    ) },
+    { key: "runningLow", header: "Закінчується", cell: (r) => (
+      r.unit && r.unit !== 'pcs' ? (
+        r.runningLow ? <span className="px-2 py-0.5 rounded-full text-xs border bg-yellow-50 border-yellow-300 text-yellow-800">Закінчується</span> : '—'
+      ) : '—'
     ) },
     { key: "manufacturer", header: "Виробник", cell: (r) => (
       typeEditingId === r.id ? (<TextInput value={editTypeMan} onChange={setEditTypeMan} placeholder="Виробник" />) : (r.manufacturer || "")
@@ -600,7 +641,8 @@ function PartsView({ state, dispatch }) {
           <>
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
               try {
-                await dispatch({ type: 'UPDATE_PART_TYPE', id: r.id, classId: editTypeClassId, name: editTypeName.trim() || r.name, unit: editTypeUnit, manufacturer: editTypeMan, sku: editTypeSku, note: editTypeNote });
+                const current = typeOptions.find(t=>t.id===r.id);
+                await dispatch({ type: 'UPDATE_PART_TYPE', id: r.id, classId: editTypeClassId, name: editTypeName.trim() || r.name, unit: editTypeUnit, manufacturer: editTypeMan, sku: editTypeSku, note: editTypeNote, runningLow: current?.unit && current.unit !== 'pcs' ? !!current?.runningLow : false, runningLowThreshold: editTypeUnit === 'pcs' && editTypeThreshold !== '' ? Number(editTypeThreshold) : undefined });
                 setTypeEditingId(null);
               } catch(e) { alert(String(e)); }
             }}>Зберегти</button>
@@ -616,6 +658,7 @@ function PartsView({ state, dispatch }) {
               setEditTypeMan(r.manufacturer||'');
               setEditTypeSku(r.sku||'');
               setEditTypeNote(r.note||'');
+              setEditTypeThreshold(r.unit === 'pcs' ? (r.runningLowThreshold ?? '') : '');
             }}><Pencil className="w-4 h-4"/></button>
             <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
               if (!confirm('Видалити вид деталі? Якщо використовується в закупках або продуктах — видалення неможливе.')) return;
@@ -630,27 +673,61 @@ function PartsView({ state, dispatch }) {
   return (
     <div className="grid gap-6">
       <Section title="Класи деталей" icon={Package}>
-        <div className="grid md:grid-cols-4 gap-3">
-          <TextInput value={className} onChange={setClassName} placeholder="Напр., Елементи, Нікелева стрічка, 3D-друк" />
-          <div className="flex items-center gap-2 border rounded-xl px-3 py-2 bg-white">
-            <span className="text-sm text-gray-600">Колір</span>
-            <input type="color" className="w-8 h-6 p-0 border-0 bg-transparent cursor-pointer" value={classColor} onChange={(e)=> setClassColor(e.target.value)} />
+        <Card>
+          <div className="grid md:grid-cols-4 gap-3 items-end">
+            <div className="md:col-span-2">
+              <div className="text-xs text-gray-500 mb-1">Назва класу</div>
+              <TextInput value={className} onChange={setClassName} placeholder="Напр., Елементи, Нікелева стрічка, 3D-друк" />
+            </div>
+            <div className="md:col-span-1">
+              <div className="text-xs text-gray-500 mb-1">Іконка</div>
+              <div className="relative">
+                <select className="w-full border rounded-xl px-3 py-2 bg-white" value={classIcon} onChange={(e)=> setClassIcon(e.target.value)}>
+                  <option value="">— Іконка —</option>
+                  {iconChoices.map(k => (
+                    <option key={k} value={k}>{k}</option>
+                  ))}
+                </select>
+                {classIcon && (
+                  <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">
+                    {renderClassIcon(classIcon)}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <button
+                className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
+                onClick={() => {
+                  if (!className.trim()) return;
+                  dispatch({ type: "ADD_PART_CLASS", name: className, color: undefined, icon: classIcon || undefined });
+                  setClassName(""); setClassIcon("");
+                }}
+              >
+                <Plus className="w-4 h-4" /> Додати клас
+              </button>
+            </div>
           </div>
-          <button
-            className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
-            onClick={() => {
-              if (!className.trim()) return;
-              dispatch({ type: "ADD_PART_CLASS", name: className, color: classColor });
-              setClassName(""); setClassColor("#e5e7eb");
-            }}
-          >
-            <Plus className="w-4 h-4" /> Додати клас
-          </button>
-        </div>
+        </Card>
+        <div className="mt-3">
         <Table columns={classCols} rows={state.partClasses} empty="Немає класів" />
+        </div>
       </Section>
 
-      <Section title="Види деталей" icon={Boxes}>
+      <Section
+        title="Види деталей"
+        icon={Boxes}
+        right={(
+          <div className="flex items-center gap-2">
+            <button
+              className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center gap-2"
+              onClick={() => setShowAddType(v => !v)}
+            >
+              <Plus className="w-4 h-4" /> {showAddType ? 'Сховати' : 'Додати вид деталі'}
+            </button>
+          </div>
+        )}
+      >
         <div className="mb-2 flex items-center gap-2 justify-end">
           <button
             className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
@@ -704,29 +781,48 @@ function PartsView({ state, dispatch }) {
             </div>
           </div>
         )}
-        <div className="grid md:grid-cols-6 gap-3">
-          <Select value={ptClassId} onChange={setPtClassId}>
-            {state.partClasses.length === 0 && <option value="">Спочатку додайте клас</option>}
-            {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
-          </Select>
-          <TextInput value={ptName} onChange={setPtName} placeholder="Напр., Tenpower 40T, Нікель 8мм" />
-          <TextInput value={ptUnit} onChange={setPtUnit} placeholder="Одиниця (pcs/m/cm)" />
-          <TextInput value={ptMan} onChange={setPtMan} placeholder="Виробник (необов'язково)" />
-          <TextInput value={ptSku} onChange={setPtSku} placeholder="SKU (необов'язково)" />
-          <TextInput value={ptNote} onChange={setPtNote} placeholder="Нотатка" />
-          <div className="md:col-span-6">
-            <button
-              className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
-              onClick={() => {
-                if (!ptClassId || !ptName.trim()) return;
-                dispatch({ type: "ADD_PART_TYPE", classId: ptClassId, name: ptName, unit: ptUnit, manufacturer: ptMan, sku: ptSku, note: ptNote });
-                setPtName(""); setPtUnit("pcs"); setPtMan(""); setPtSku(""); setPtNote("");
-              }}
-            >
-              <Plus className="w-4 h-4" /> Додати вид деталі
-            </button>
+        {showAddType && (
+          <div className="grid md:grid-cols-6 gap-3">
+            <Select value={ptClassId} onChange={setPtClassId}>
+              {state.partClasses.length === 0 && <option value="">Спочатку додайте клас</option>}
+              {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+            </Select>
+            <TextInput value={ptName} onChange={setPtName} placeholder="Напр., Tenpower 40T, Нікель 8мм" />
+            <TextInput value={ptUnit} onChange={setPtUnit} placeholder="Одиниця (pcs/m/cm)" />
+            <TextInput value={ptMan} onChange={setPtMan} placeholder="Виробник (необов'язково)" />
+            <TextInput value={ptSku} onChange={setPtSku} placeholder="SKU (необов'язково)" />
+            <TextInput value={ptNote} onChange={setPtNote} placeholder="Нотатка" />
+            <div className="md:col-span-6">
+              {ptUnit === 'pcs' && (
+                <div className="grid md:grid-cols-3 gap-3 items-end">
+                  <div>
+                    <div className="text-xs text-gray-500 mb-1">Позначити як закінчується при &lt; ніж (шт)</div>
+                    <input type="number" min="0" step="1" className="w-full border rounded-xl px-3 py-2" value={ptThreshold} onChange={(e)=> setPtThreshold(e.target.value)} placeholder="напр., 5" />
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="md:col-span-6 flex items-center gap-2">
+              <button
+                className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
+                onClick={() => {
+                  if (!ptClassId || !ptName.trim()) return;
+                  dispatch({ type: "ADD_PART_TYPE", classId: ptClassId, name: ptName, unit: ptUnit, manufacturer: ptMan, sku: ptSku, note: ptNote, runningLowThreshold: ptUnit === 'pcs' && ptThreshold !== '' ? Number(ptThreshold) : undefined });
+                  setPtName(""); setPtUnit("pcs"); setPtMan(""); setPtSku(""); setPtNote(""); setPtThreshold("");
+                  setShowAddType(false);
+                }}
+              >
+                <Save className="w-4 h-4" /> Зберегти вид
+              </button>
+              <button
+                className="rounded-xl border px-4 py-2 hover:bg-gray-50"
+                onClick={() => {
+                  setShowAddType(false);
+                }}
+              >Скасувати</button>
+            </div>
           </div>
-        </div>
+        )}
 
         <Table columns={typeCols} rows={filteredTypes} empty="Немає видів деталей" />
       </Section>
@@ -750,6 +846,15 @@ function SuppliersView({ state, refresh, applyPartialState }) {
   const [addTypeId, setAddTypeId] = useState("");
   const [page, setPage] = useState(1);
   const PER_PAGE = 20;
+
+  // Small icon registry for classes
+  const ICONS = {
+    Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
+  };
+  function renderClassIcon(name) {
+    const IconComp = (name && ICONS[name]) || Package;
+    return <IconComp className="w-4 h-4 mx-auto my-auto" />;
+  }
 
   // inline edit state
   const [editingId, setEditingId] = useState(null);
@@ -944,10 +1049,10 @@ function SuppliersView({ state, refresh, applyPartialState }) {
                 <div key={g.cid} className="space-y-1">
                   <div>
                     <button
-                      className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+                      className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50 inline-flex items-center gap-1"
                       style={style}
                       onClick={(e)=>{ e.preventDefault(); setFilterClassId(g.cid); setFilterTypeId(""); setShowFilters(true); }}
-                    >{cls?.name || g.cid}</button>
+                    >{renderClassIcon(cls?.icon)} {cls?.name || g.cid}</button>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {g.types.map(t => (
@@ -1206,6 +1311,15 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   const [newSupplierName, setNewSupplierName] = useState("");
   const [newSupplierWebsite, setNewSupplierWebsite] = useState("");
   const [newSupplierForPurchaseId, setNewSupplierForPurchaseId] = useState(null);
+
+  // Small icon registry for classes
+  const ICONS = {
+    Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
+  };
+  function renderClassIcon(name) {
+    const IconComp = (name && ICONS[name]) || Package;
+    return <IconComp className="w-4 h-4 mx-auto my-auto" />;
+  }
   // Filters & sorting
   const [deliveryFilter, setDeliveryFilter] = useState("all"); // all | delivered | not_delivered
   const [paymentFilter, setPaymentFilter] = useState("all");   // all | paid | not_paid
@@ -1519,10 +1633,10 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               <div key={it.id} className="space-y-1">
                 <div>
                   <button
-                    className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+                    className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50 inline-flex items-center gap-1"
                     style={makeClassChipStyle(partClass?.color)}
                     onClick={()=> setClassFilter(partClass?.id || '')}
-                  >{partClass?.name || "?"}</button>
+                  >{renderClassIcon(partClass?.icon)} {partClass?.name || "?"}</button>
                 </div>
                 <div>
                   <button className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100" onClick={()=> setTypeFilter(part?.id || '')}>{part?.name || "?"}</button>
@@ -2128,18 +2242,27 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   );
 }
 
-function InventoryView({ state }) {
+function InventoryView({ state, dispatch }) {
   const partById = (id) => state.partTypes.find((p) => p.id === id);
   const rows = Object.entries(state.inventory).map(([partTypeId, data]) => ({ id: partTypeId, partTypeId, ...data }));
+
+  // Small icon registry for classes
+  const ICONS = {
+    Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
+  };
+  function renderClassIcon(name) {
+    const IconComp = (name && ICONS[name]) || Package;
+    return <IconComp className="w-4 h-4 mx-auto my-auto" />;
+  }
 
   const cols = [
     { key: "name", header: "Деталь", cell: (r) => {
       const part = partById(r.partTypeId);
-      const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
+          const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
       return (
         <div>
           <div className="font-medium">
-            <span className="text-gray-500">[{partClass?.name || "?"}]</span> {part?.name || "?"}
+            <span className="text-gray-500 inline-flex items-center gap-1">[{renderClassIcon(partClass?.icon)} {partClass?.name || "?"}]</span> {part?.name || "?"}
           </div>
           <div className="text-xs text-gray-500">Одиниця: {part?.unit || 'pcs'}</div>
         </div>
@@ -2148,6 +2271,27 @@ function InventoryView({ state }) {
     { key: "qty", header: "Кількість" },
     { key: "avgCost", header: "Сер. собівартість", cell: (r) => currency(r.avgCost) },
     { key: "total", header: "Сума", cell: (r) => currency(r.avgCost * r.qty) },
+    { key: "runningLow", header: "Статус", cell: (r) => {
+      const part = partById(r.partTypeId);
+      if (!part || part.unit === 'pcs') return '—';
+      return part.runningLow ? <span className="px-2 py-0.5 rounded-full text-xs border bg-yellow-50 border-yellow-300 text-yellow-800">Закінчується</span> : '—';
+    } },
+    { key: "actions", header: "—", thClass: "w-32", cell: (r) => {
+      const part = partById(r.partTypeId);
+      if (!part || part.unit === 'pcs') return '—';
+      return (
+        <button 
+          className={`px-3 py-1 rounded-xl border text-sm ${part.runningLow ? 'bg-red-100 text-red-700 border-red-300' : 'bg-gray-100 text-gray-700 border-gray-300'}`}
+          onClick={async () => {
+            try {
+              await dispatch({ type: 'UPDATE_PART_TYPE', id: part.id, runningLow: !part.runningLow });
+            } catch(e) { alert(String(e)); }
+          }}
+        >
+          {part.runningLow ? 'Скасувати' : 'Позначити Завершується'}
+        </button>
+      );
+    } },
   ];
 
   const prodCols = [

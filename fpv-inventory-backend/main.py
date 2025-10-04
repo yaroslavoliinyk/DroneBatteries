@@ -204,6 +204,7 @@ class PartClass(BaseModel):
     id: Optional[str] = None
     name: str
     color: Optional[str] = None
+    icon: Optional[str] = None  # optional lucide icon name
 
 class PartType(BaseModel):
     id: Optional[str] = None
@@ -213,6 +214,8 @@ class PartType(BaseModel):
     manufacturer: Optional[str] = ""
     sku: Optional[str] = ""
     note: Optional[str] = ""
+    runningLow: Optional[bool] = False
+    runningLowThreshold: Optional[float] = None
 
 class PurchaseItem(BaseModel):
     id: Optional[str] = None
@@ -418,6 +421,7 @@ async def add_part_type(item: PartType):
 class UpdatePartClassRequest(BaseModel):
     name: Optional[str] = None
     color: Optional[str] = None
+    icon: Optional[str] = None
 
 
 @app.put("/parts/classes/{class_id}")
@@ -454,6 +458,8 @@ class UpdatePartTypeRequest(BaseModel):
     manufacturer: Optional[str] = None
     sku: Optional[str] = None
     note: Optional[str] = None
+    runningLow: Optional[bool] = None
+    runningLowThreshold: Optional[float] = None
 
 
 @app.put("/parts/types/{type_id}")
