@@ -468,6 +468,42 @@ function PartsView({ state, dispatch }) {
   const [ptSku, setPtSku] = useState("");
   const [ptNote, setPtNote] = useState("");
 
+  // Filters for part types
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterClassId, setFilterClassId] = useState("");
+  const [filterTypeId, setFilterTypeId] = useState("");
+  const [typeQuery, setTypeQuery] = useState("");
+
+  const classOptions = Array.isArray(state?.partClasses) ? state.partClasses : [];
+  const typeOptions = Array.isArray(state?.partTypes) ? state.partTypes : [];
+  const filteredTypeOptionsByFilter = filterClassId
+    ? typeOptions.filter(t => t.classId === filterClassId)
+    : typeOptions;
+
+  const filteredTypes = useMemo(() => {
+    let rows = typeOptions;
+    if (filterClassId) rows = rows.filter(t => t.classId === filterClassId);
+    if (filterTypeId) rows = rows.filter(t => t.id === filterTypeId);
+    if (typeQuery.trim()) {
+      const q = typeQuery.trim().toLowerCase();
+      rows = rows.filter(t =>
+        (t.name || "").toLowerCase().includes(q) ||
+        (t.manufacturer || "").toLowerCase().includes(q) ||
+        (t.sku || "").toLowerCase().includes(q) ||
+        (t.note || "").toLowerCase().includes(q)
+      );
+    }
+    return rows;
+  }, [typeOptions, filterClassId, filterTypeId, typeQuery]);
+
+  const activeFilterChips = useMemo(() => {
+    const chips = [];
+    if (filterClassId) chips.push(`Клас: ${classOptions.find(c=>c.id===filterClassId)?.name || filterClassId}`);
+    if (filterTypeId) chips.push(`Вид: ${typeOptions.find(t=>t.id===filterTypeId)?.name || filterTypeId}`);
+    if (typeQuery.trim()) chips.push(`Пошук: "${typeQuery.trim()}"`);
+    return chips;
+  }, [filterClassId, filterTypeId, typeQuery, classOptions, typeOptions]);
+
   const classCols = [
     { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
     { key: "name", header: "Назва класу", cell: (r) => (
@@ -530,9 +566,21 @@ function PartsView({ state, dispatch }) {
     { key: "class", header: "Клас", cell: (r) => (
       typeEditingId === r.id ? (
         <Select value={editTypeClassId} onChange={setEditTypeClassId}>
-          {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+          {classOptions.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
         </Select>
-      ) : (state.partClasses.find((c) => c.id === r.classId)?.name || "—")
+      ) : (
+        (() => {
+          const cls = classOptions.find((c) => c.id === r.classId);
+          const style = makeClassChipStyle(cls?.color);
+          return (
+            <button
+              className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50"
+              style={style}
+              onClick={(e)=>{ e.preventDefault(); setFilterClassId(r.classId); setFilterTypeId(""); setShowFilters(true); }}
+            >{cls?.name || r.classId || '—'}</button>
+          );
+        })()
+      )
     ) },
     { key: "unit", header: "Одиниця", cell: (r) => (
       typeEditingId === r.id ? (<TextInput value={editTypeUnit} onChange={setEditTypeUnit} placeholder="pcs/m/cm" />) : r.unit
@@ -603,6 +651,59 @@ function PartsView({ state, dispatch }) {
       </Section>
 
       <Section title="Види деталей" icon={Boxes}>
+        <div className="mb-2 flex items-center gap-2 justify-end">
+          <button
+            className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+            onClick={() => setShowFilters(v => !v)}
+          >
+            <Filter className="w-4 h-4" /> Фільтри
+            {activeFilterChips.length > 0 && (
+              <span className="ml-1 px-2 py-0.5 rounded-full text-xs bg-gray-900 text-white">{activeFilterChips.length}</span>
+            )}
+          </button>
+          <button
+            className="px-3 py-2 rounded-xl border flex items-center gap-2 bg-white hover:bg-gray-50"
+            title="Скинути фільтри"
+            onClick={() => { setFilterClassId(""); setFilterTypeId(""); setTypeQuery(""); }}
+          >
+            <RotateCcw className="w-4 h-4" /> Скинути
+          </button>
+        </div>
+        {showFilters && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm space-y-3">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Клас</div>
+                <Select value={filterClassId} onChange={(v) => { setFilterClassId(v); setFilterTypeId(""); }}>
+                  <option value="">Всі</option>
+                  {classOptions.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Вид</div>
+                <Select value={filterTypeId} onChange={setFilterTypeId}>
+                  <option value="">{filterClassId ? '— Оберіть вид —' : '— спочатку оберіть клас —'}</option>
+                  {filteredTypeOptionsByFilter.map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Пошук</div>
+                <TextInput value={typeQuery} onChange={setTypeQuery} placeholder="назва / виробник / SKU / нотатка" />
+              </div>
+            </div>
+            {activeFilterChips.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {activeFilterChips.map((txt, i) => (<Tag key={txt + i}>{txt}</Tag>))}
+              </div>
+            )}
+            <div>
+              <button
+                className="rounded-xl border px-4 py-2 hover:bg-gray-50"
+                onClick={() => { setFilterClassId(""); setFilterTypeId(""); setTypeQuery(""); }}
+              >Скинути</button>
+            </div>
+          </div>
+        )}
         <div className="grid md:grid-cols-6 gap-3">
           <Select value={ptClassId} onChange={setPtClassId}>
             {state.partClasses.length === 0 && <option value="">Спочатку додайте клас</option>}
@@ -627,7 +728,7 @@ function PartsView({ state, dispatch }) {
           </div>
         </div>
 
-        <Table columns={typeCols} rows={state.partTypes} empty="Немає видів деталей" />
+        <Table columns={typeCols} rows={filteredTypes} empty="Немає видів деталей" />
       </Section>
     </div>
   );
