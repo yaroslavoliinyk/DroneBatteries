@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil } from "lucide-react";
 import api from "./api";
 
 /**
@@ -402,9 +402,9 @@ function BalanceView({ state, dispatch, balance }) {
         r.note || ''
       )
     ) },
-    { key: "actions", header: "—", thClass: "w-40", cell: (r) => (
+    { key: "actions", header: "—", thClass: "w-28", cell: (r) => (
       editingId === r.id ? (
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={() => {
             dispatch({ type: 'UPDATE_BALANCE_ENTRY', id: r.id, date: editDate, entryType: editType, amount: Number(editAmount), note: editNote, tag: editTag });
             setEditingId(null);
@@ -412,19 +412,19 @@ function BalanceView({ state, dispatch, balance }) {
           <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={() => setEditingId(null)}>Скасувати</button>
         </div>
       ) : (
-        <div className="flex gap-2">
-          <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={() => {
+        <div className="flex items-center gap-2">
+          <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={() => {
             setEditingId(r.id);
             setEditDate(r.date || todayISO());
             setEditType(r.type);
             setEditAmount(Number(r.amount || 0));
             setEditNote(r.note || '');
             setEditTag(r.tag || '');
-          }}>Редагувати</button>
-          <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={() => {
+          }}><Pencil className="w-4 h-4"/></button>
+          <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={() => {
             if (!confirm('Видалити транзакцію?')) return;
             dispatch({ type: 'DELETE_BALANCE_ENTRY', id: r.id });
-          }}>Видалити</button>
+          }}><Trash2 className="w-4 h-4"/></button>
         </div>
       )
     ) },
@@ -488,8 +488,8 @@ function PartsView({ state, dispatch }) {
         </span>
       )
     )},
-    { key: "actions", header: "—", thClass: "w-44", cell: (r) => (
-      <div className="flex gap-2 flex-wrap">
+    { key: "actions", header: "—", thClass: "w-28", cell: (r) => (
+      <div className="flex items-center gap-2">
         {classEditingId === r.id ? (
           <>
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
@@ -502,11 +502,11 @@ function PartsView({ state, dispatch }) {
           </>
         ) : (
           <>
-            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> { setClassEditingId(r.id); setEditClassName(r.name||''); setEditClassColor(r.color||'#e5e7eb'); }}>Редагувати</button>
-            <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={async ()=>{
+            <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> { setClassEditingId(r.id); setEditClassName(r.name||''); setEditClassColor(r.color||'#e5e7eb'); }}><Pencil className="w-4 h-4"/></button>
+            <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
               if (!confirm('Видалити клас? Якщо є прив\'язані види — видалення неможливе.')) return;
               try { await dispatch({ type: 'DELETE_PART_CLASS', id: r.id }); } catch(e) { alert(String(e)); }
-            }}>Видалити</button>
+            }}><Trash2 className="w-4 h-4"/></button>
           </>
         )}
       </div>
@@ -546,8 +546,8 @@ function PartsView({ state, dispatch }) {
     { key: "note", header: "Нотатка", cell: (r) => (
       typeEditingId === r.id ? (<TextInput value={editTypeNote} onChange={setEditTypeNote} placeholder="Нотатка" />) : (r.note || "")
     ) },
-    { key: "actions", header: "—", thClass: "w-44", cell: (r) => (
-      <div className="flex gap-2 flex-wrap">
+    { key: "actions", header: "—", thClass: "w-28", cell: (r) => (
+      <div className="flex items-center gap-2">
         {typeEditingId === r.id ? (
           <>
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
@@ -560,7 +560,7 @@ function PartsView({ state, dispatch }) {
           </>
         ) : (
           <>
-            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> {
+            <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> {
               setTypeEditingId(r.id);
               setEditTypeName(r.name||'');
               setEditTypeClassId(r.classId||'');
@@ -568,11 +568,11 @@ function PartsView({ state, dispatch }) {
               setEditTypeMan(r.manufacturer||'');
               setEditTypeSku(r.sku||'');
               setEditTypeNote(r.note||'');
-            }}>Редагувати</button>
-            <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={async ()=>{
+            }}><Pencil className="w-4 h-4"/></button>
+            <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
               if (!confirm('Видалити вид деталі? Якщо використовується в закупках або продуктах — видалення неможливе.')) return;
               try { await dispatch({ type: 'DELETE_PART_TYPE', id: r.id }); } catch(e) { alert(String(e)); }
-            }}>Видалити</button>
+            }}><Trash2 className="w-4 h-4"/></button>
           </>
         )}
       </div>
@@ -868,8 +868,8 @@ function SuppliersView({ state, refresh, applyPartialState }) {
     { key: "note", header: "Нотатка", cell: (s) => editingId === s.id ? (
       <TextInput value={editNote} onChange={setEditNote} placeholder="Нотатка" />
     ) : (s.note || '') },
-    { key: "actions", header: "—", thClass: "w-44", cell: (s) => (
-      <div className="flex gap-2 flex-wrap">
+    { key: "actions", header: "—", thClass: "w-28", cell: (s) => (
+      <div className="flex items-center gap-2">
         {editingId === s.id ? (
           <>
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={saveEditSupplier}>Зберегти</button>
@@ -877,9 +877,10 @@ function SuppliersView({ state, refresh, applyPartialState }) {
           </>
         ) : (
           <>
-            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> startEditSupplier(s)}>Редагувати</button>
+            <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> startEditSupplier(s)}><Pencil className="w-4 h-4"/></button>
             <button
-              className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
+              className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
+              title="Видалити"
               onClick={async () => {
                 if (!confirm('Видалити постачальника?')) return;
                 // optimistic remove
@@ -892,7 +893,7 @@ function SuppliersView({ state, refresh, applyPartialState }) {
                   alert(String(e));
                 }
               }}
-            >Видалити</button>
+            ><Trash2 className="w-4 h-4"/></button>
           </>
         )}
       </div>
@@ -1574,12 +1575,16 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             </div>
           ) : (
             <button
-              className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50"
+              className="p-2 rounded-lg border hover:bg-gray-50"
+              title="Редагувати"
               onClick={() => startEditRow(r)}
-            >Редагувати</button>
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
           )}
           <button
-            className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300"
+            className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
+            title="Видалити"
             onClick={async () => {
               if (!confirm('Видалити закупку? Дію не можна скасувати.')) return;
               try {
@@ -1591,7 +1596,9 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                 alert(String(e));
               }
             }}
-          >Видалити</button>
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
         {expandedPurchase === r.id && !r.isService && (
           <div className="mt-2 p-3 bg-blue-50 rounded-xl space-y-2">
