@@ -81,7 +81,7 @@ DroneBatteries/
 ### Basic Commands
 
 ```bash
-# Start all services
+# Start (hot reload enabled via bind mounts)
 docker compose up -d
 
 # Stop all services
@@ -96,6 +96,21 @@ docker compose up --build -d
 # Start specific service
 docker compose up -d backend
 ```
+
+### Development Mode (simple hot reload)
+
+```bash
+# Start with hot reload (bind mounts)
+docker compose up -d
+
+# View live logs
+docker compose logs -f backend frontend
+```
+
+Цей режим вже налаштований:
+- **Backend**: `uvicorn --reload`, монтуємо `fpv-inventory-backend` в контейнер
+- **Frontend**: Vite dev server (`npm run dev`), монтуємо `fpv-inventory-react-server` в контейнер
+- **Порти**: Frontend `http://localhost:3000`, Backend `http://localhost:8000`
 
 ### Development
 

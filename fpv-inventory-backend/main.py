@@ -414,6 +414,84 @@ async def add_part_type(item: PartType):
     doc.pop("_id", None)
     return doc
 
+# --- Updates & Deletes for Parts ---
+class UpdatePartClassRequest(BaseModel):
+    name: Optional[str] = None
+    color: Optional[str] = None
+
+
+@app.put("/parts/classes/{class_id}")
+async def update_part_class(class_id: str, body: UpdatePartClassRequest):
+    cls = await c_part_classes.find_one({"_id": class_id})
+    if not cls:
+        raise HTTPException(404, "Part class not found")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not patch:
+        return {"ok": True}
+    await c_part_classes.update_one({"_id": class_id}, {"$set": patch})
+    return {"ok": True}
+
+
+@app.delete("/parts/classes/{class_id}")
+async def delete_part_class(class_id: str):
+    cls = await c_part_classes.find_one({"_id": class_id})
+    if not cls:
+        raise HTTPException(404, "Part class not found")
+    # Prevent deletion if there are part types under this class
+    has_types = await c_part_types.find_one({"classId": class_id})
+    if has_types:
+        raise HTTPException(400, "Неможливо видалити: клас має прив'язані види деталей")
+    # Remove references from suppliers.classIds
+    await c_suppliers.update_many({}, {"$pull": {"classIds": class_id}})
+    await c_part_classes.delete_one({"_id": class_id})
+    return {"ok": True}
+
+
+class UpdatePartTypeRequest(BaseModel):
+    classId: Optional[str] = None
+    name: Optional[str] = None
+    unit: Optional[str] = None
+    manufacturer: Optional[str] = None
+    sku: Optional[str] = None
+    note: Optional[str] = None
+
+
+@app.put("/parts/types/{type_id}")
+async def update_part_type(type_id: str, body: UpdatePartTypeRequest):
+    pt = await c_part_types.find_one({"_id": type_id})
+    if not pt:
+        raise HTTPException(404, "Part type not found")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    # If classId changed, ensure class exists
+    new_class_id = patch.get("classId")
+    if new_class_id is not None:
+        cls = await c_part_classes.find_one({"_id": new_class_id})
+        if not cls:
+            raise HTTPException(400, "Вказаний classId не існує")
+    if not patch:
+        return {"ok": True}
+    await c_part_types.update_one({"_id": type_id}, {"$set": patch})
+    return {"ok": True}
+
+
+@app.delete("/parts/types/{type_id}")
+async def delete_part_type(type_id: str):
+    pt = await c_part_types.find_one({"_id": type_id})
+    if not pt:
+        raise HTTPException(404, "Part type not found")
+    # Block delete if referenced in purchases or products' BOM
+    used_in_purchase = await c_purchases.find_one({"items": {"$elemMatch": {"partTypeId": type_id}}})
+    if used_in_purchase:
+        raise HTTPException(400, "Неможливо видалити: вид використовується в закупках")
+    used_in_product = await c_products.find_one({"bom": {"$elemMatch": {"partTypeId": type_id}}})
+    if used_in_product:
+        raise HTTPException(400, "Неможливо видалити: вид використовується у специфікаціях продуктів")
+    # Clean up supplier references and inventory record
+    await c_suppliers.update_many({}, {"$pull": {"typeIds": type_id}})
+    await c_inventory.delete_one({"_id": type_id})
+    await c_part_types.delete_one({"_id": type_id})
+    return {"ok": True}
+
 # Purchases
 @app.get("/purchases")
 async def list_purchases():

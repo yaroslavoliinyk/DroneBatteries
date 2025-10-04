@@ -1,7 +1,5 @@
-version: '3.8'
-
 services:
-  # Backend сервіс (FastAPI) - з MongoDB Atlas
+  # Backend (FastAPI) with auto-reload and bind mount
   backend:
     build:
       context: ./fpv-inventory-backend
@@ -14,27 +12,32 @@ services:
       - MONGODB_URI=${MONGODB_URI:-mongodb+srv://root:4556@cluster0.a1fqoim.mongodb.net/}
       - DB_NAME=${DB_NAME:-fpv_inventory}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
+    volumes:
+      - ./fpv-inventory-backend:/app
     networks:
       - fpv-network
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-  # Frontend сервіс (React)
+  # Frontend (Vite dev server) with bind mount
   frontend:
     build:
       context: ./fpv-inventory-react-server
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: fpv-frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3000:5173"
     environment:
       - VITE_API_BASE=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./fpv-inventory-react-server:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0
     depends_on:
       - backend
     networks:
       - fpv-network
-
-  # (dev profile removed for minimal deploy)
 
 networks:
   fpv-network:

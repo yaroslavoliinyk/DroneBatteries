@@ -71,6 +71,24 @@ export default function App() {
           sku: action.sku,
           note: action.note,
         });
+      } else if (action.type === "UPDATE_PART_CLASS") {
+        await api.updatePartClass(action.id, {
+          name: action.name,
+          color: action.color,
+        });
+      } else if (action.type === "DELETE_PART_CLASS") {
+        await api.deletePartClass(action.id);
+      } else if (action.type === "UPDATE_PART_TYPE") {
+        await api.updatePartType(action.id, {
+          classId: action.classId,
+          name: action.name,
+          unit: action.unit,
+          manufacturer: action.manufacturer,
+          sku: action.sku,
+          note: action.note,
+        });
+      } else if (action.type === "DELETE_PART_TYPE") {
+        await api.deletePartType(action.id);
       } else if (action.type === "ADD_PURCHASE") {
         // Normalize pricing: if a row uses "total" mode, convert to unitCost = totalCost / qty
         const items = action.items.map(it => {
@@ -440,6 +458,9 @@ function BalanceView({ state, dispatch, balance }) {
 function PartsView({ state, dispatch }) {
   const [className, setClassName] = useState("");
   const [classColor, setClassColor] = useState("#e5e7eb");
+  const [classEditingId, setClassEditingId] = useState(null);
+  const [editClassName, setEditClassName] = useState("");
+  const [editClassColor, setEditClassColor] = useState("#e5e7eb");
   const [ptName, setPtName] = useState("");
   const [ptUnit, setPtUnit] = useState("pcs");
   const [ptClassId, setPtClassId] = useState(state.partClasses[0]?.id || "");
@@ -448,22 +469,114 @@ function PartsView({ state, dispatch }) {
   const [ptNote, setPtNote] = useState("");
 
   const classCols = [
-    { key: "name", header: "Назва класу" },
+    { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
+    { key: "name", header: "Назва класу", cell: (r) => (
+      classEditingId === r.id ? (
+        <TextInput value={editClassName} onChange={setEditClassName} placeholder="Назва класу" />
+      ) : r.name
+    ) },
     { key: "color", header: "Колір", cell: (r) => (
-      <span className="inline-flex items-center gap-2">
-        <span className="inline-block w-4 h-4 rounded border" style={{ backgroundColor: r.color || '#e5e7eb', borderColor: '#cbd5e1' }} />
-        <span className="text-xs text-gray-500">{r.color || '—'}</span>
-      </span>
+      classEditingId === r.id ? (
+        <div className="flex items-center gap-2">
+          <input type="color" className="w-8 h-6 p-0 border-0 bg-transparent cursor-pointer" value={editClassColor} onChange={(e)=> setEditClassColor(e.target.value)} />
+          <span className="text-xs text-gray-500">{editClassColor}</span>
+        </div>
+      ) : (
+        <span className="inline-flex items-center gap-2">
+          <span className="inline-block w-4 h-4 rounded border" style={{ backgroundColor: r.color || '#e5e7eb', borderColor: '#cbd5e1' }} />
+          <span className="text-xs text-gray-500">{r.color || '—'}</span>
+        </span>
+      )
     )},
+    { key: "actions", header: "—", thClass: "w-44", cell: (r) => (
+      <div className="flex gap-2 flex-wrap">
+        {classEditingId === r.id ? (
+          <>
+            <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
+              try {
+                await dispatch({ type: 'UPDATE_PART_CLASS', id: r.id, name: editClassName.trim() || r.name, color: editClassColor });
+                setClassEditingId(null);
+              } catch(e) { alert(String(e)); }
+            }}>Зберегти</button>
+            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> setClassEditingId(null)}>Скасувати</button>
+          </>
+        ) : (
+          <>
+            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> { setClassEditingId(r.id); setEditClassName(r.name||''); setEditClassColor(r.color||'#e5e7eb'); }}>Редагувати</button>
+            <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={async ()=>{
+              if (!confirm('Видалити клас? Якщо є прив\'язані види — видалення неможливе.')) return;
+              try { await dispatch({ type: 'DELETE_PART_CLASS', id: r.id }); } catch(e) { alert(String(e)); }
+            }}>Видалити</button>
+          </>
+        )}
+      </div>
+    ) },
   ];
 
+  // Inline edit for types
+  const [typeEditingId, setTypeEditingId] = useState(null);
+  const [editTypeName, setEditTypeName] = useState("");
+  const [editTypeClassId, setEditTypeClassId] = useState("");
+  const [editTypeUnit, setEditTypeUnit] = useState("pcs");
+  const [editTypeMan, setEditTypeMan] = useState("");
+  const [editTypeSku, setEditTypeSku] = useState("");
+  const [editTypeNote, setEditTypeNote] = useState("");
+
   const typeCols = [
-    { key: "name", header: "Назва виду" },
-    { key: "class", header: "Клас", cell: (r) => state.partClasses.find((c) => c.id === r.classId)?.name || "—" },
-    { key: "unit", header: "Одиниця" },
-    { key: "manufacturer", header: "Виробник" },
-    { key: "sku", header: "SKU" },
-    { key: "note", header: "Нотатка" },
+    { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
+    { key: "name", header: "Назва виду", cell: (r) => (
+      typeEditingId === r.id ? (<TextInput value={editTypeName} onChange={setEditTypeName} placeholder="Назва виду" />) : r.name
+    ) },
+    { key: "class", header: "Клас", cell: (r) => (
+      typeEditingId === r.id ? (
+        <Select value={editTypeClassId} onChange={setEditTypeClassId}>
+          {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+        </Select>
+      ) : (state.partClasses.find((c) => c.id === r.classId)?.name || "—")
+    ) },
+    { key: "unit", header: "Одиниця", cell: (r) => (
+      typeEditingId === r.id ? (<TextInput value={editTypeUnit} onChange={setEditTypeUnit} placeholder="pcs/m/cm" />) : r.unit
+    ) },
+    { key: "manufacturer", header: "Виробник", cell: (r) => (
+      typeEditingId === r.id ? (<TextInput value={editTypeMan} onChange={setEditTypeMan} placeholder="Виробник" />) : (r.manufacturer || "")
+    ) },
+    { key: "sku", header: "SKU", cell: (r) => (
+      typeEditingId === r.id ? (<TextInput value={editTypeSku} onChange={setEditTypeSku} placeholder="SKU" />) : (r.sku || "")
+    ) },
+    { key: "note", header: "Нотатка", cell: (r) => (
+      typeEditingId === r.id ? (<TextInput value={editTypeNote} onChange={setEditTypeNote} placeholder="Нотатка" />) : (r.note || "")
+    ) },
+    { key: "actions", header: "—", thClass: "w-44", cell: (r) => (
+      <div className="flex gap-2 flex-wrap">
+        {typeEditingId === r.id ? (
+          <>
+            <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
+              try {
+                await dispatch({ type: 'UPDATE_PART_TYPE', id: r.id, classId: editTypeClassId, name: editTypeName.trim() || r.name, unit: editTypeUnit, manufacturer: editTypeMan, sku: editTypeSku, note: editTypeNote });
+                setTypeEditingId(null);
+              } catch(e) { alert(String(e)); }
+            }}>Зберегти</button>
+            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> setTypeEditingId(null)}>Скасувати</button>
+          </>
+        ) : (
+          <>
+            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> {
+              setTypeEditingId(r.id);
+              setEditTypeName(r.name||'');
+              setEditTypeClassId(r.classId||'');
+              setEditTypeUnit(r.unit||'pcs');
+              setEditTypeMan(r.manufacturer||'');
+              setEditTypeSku(r.sku||'');
+              setEditTypeNote(r.note||'');
+            }}>Редагувати</button>
+            <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={async ()=>{
+              if (!confirm('Видалити вид деталі? Якщо використовується в закупках або продуктах — видалення неможливе.')) return;
+              try { await dispatch({ type: 'DELETE_PART_TYPE', id: r.id }); } catch(e) { alert(String(e)); }
+            }}>Видалити</button>
+          </>
+        )}
+      </div>
+    ) },
   ];
 
   return (
