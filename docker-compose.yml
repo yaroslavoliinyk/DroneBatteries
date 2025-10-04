@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # Backend сервіс (FastAPI) - з MongoDB Atlas
+  backend:
+    build:
+      context: ./fpv-inventory-backend
+      dockerfile: Dockerfile
+    container_name: fpv-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=${MONGODB_URI:-mongodb+srv://root:4556@cluster0.a1fqoim.mongodb.net/}
+      - DB_NAME=${DB_NAME:-fpv_inventory}
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
+    networks:
+      - fpv-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  # Frontend сервіс (React)
+  frontend:
+    build:
+      context: ./fpv-inventory-react-server
+      dockerfile: Dockerfile
+    container_name: fpv-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_BASE=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - fpv-network
+
+  # (dev profile removed for minimal deploy)
+
+networks:
+  fpv-network:
+    driver: bridge

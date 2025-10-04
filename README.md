@@ -1,6 +1,6 @@
 # FPV Batteries Inventory System
 
-A comprehensive inventory management system for FPV drone batteries built with FastAPI (Python) backend and React frontend, using MongoDB for data storage.
+A comprehensive inventory management system for FPV drone batteries built with FastAPI (Python) backend and React frontend, using MongoDB Atlas for data storage.
 
 ## 🚀 Features
 
@@ -14,10 +14,48 @@ A comprehensive inventory management system for FPV drone batteries built with F
 
 ## 🏗️ Architecture
 
-- **Backend**: FastAPI (Python) with MongoDB
+- **Backend**: FastAPI (Python) with MongoDB Atlas
 - **Frontend**: React + Vite + Tailwind CSS
-- **Database**: MongoDB Atlas
-- **API**: RESTful API with CORS support
+- **Database**: MongoDB Atlas (cloud)
+- **Deployment**: Docker containers
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- MongoDB Atlas account
+
+### Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd DroneBatteries
+   ```
+
+2. **Configure environment:**
+   ```bash
+   cp env.example .env
+   ```
+   
+   Edit `.env` file with your MongoDB Atlas URI:
+   ```env
+   MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/
+   DB_NAME=fpv_inventory
+   FRONTEND_ORIGIN=http://localhost:3000
+   VITE_API_BASE=http://localhost:8000
+   ```
+
+3. **Start the application:**
+   ```bash
+   docker compose up --build
+   ```
+
+4. **Access the application:**
+   - Frontend: http://localhost:3000
+   - Backend API: http://localhost:8000
+   - API Documentation: http://localhost:8000/docs
 
 ## 📁 Project Structure
 
@@ -25,127 +63,52 @@ A comprehensive inventory management system for FPV drone batteries built with F
 DroneBatteries/
 ├── fpv-inventory-backend/          # FastAPI backend
 │   ├── main.py                    # Main application file
-│   └── requirements.txt           # Python dependencies
+│   ├── requirements.txt           # Python dependencies
+│   ├── Dockerfile                # Backend container
+│   └── .dockerignore             # Docker ignore file
 ├── fpv-inventory-react-server/    # React frontend
-│   ├── src/
-│   │   ├── App.jsx               # Main React component
-│   │   ├── api.js                # API client
-│   │   ├── main.jsx               # React entry point
-│   │   └── index.css              # Tailwind CSS
+│   ├── src/                      # React source code
 │   ├── package.json              # Node.js dependencies
-│   ├── vite.config.js            # Vite configuration
-│   └── tailwind.config.js        # Tailwind configuration
+│   ├── Dockerfile                # Frontend container
+│   └── .dockerignore             # Docker ignore file
+├── docker-compose.yml            # Docker orchestration
+├── env.example                   # Environment variables template
 └── README.md                     # This file
 ```
 
-## 🛠️ Setup Instructions
+## 🐳 Docker Commands
 
-### Prerequisites
+### Basic Commands
 
-- Python 3.8+ with pip
-- Node.js 16+ with npm
-- MongoDB Atlas account (or local MongoDB)
+```bash
+# Start all services
+docker compose up -d
 
-### Backend Setup
+# Stop all services
+docker compose down
 
-1. **Navigate to backend directory:**
-   ```bash
-   cd fpv-inventory-backend
-   ```
+# View logs
+docker compose logs -f
 
-2. **Create virtual environment:**
-   ```bash
-   python -m venv .venv
-   ```
+# Rebuild and start
+docker compose up --build -d
 
-3. **Activate virtual environment:**
-   ```bash
-   # On macOS/Linux:
-   source .venv/bin/activate
+# Start specific service
+docker compose up -d backend
+```
 
-   # On Windows:
-   .venv\Scripts\activate
-   ```
+### Development
 
-4. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+# View backend logs
+docker compose logs backend
 
-5. **Set up environment variables:**
-   Create a `.env` file in the backend directory:
-   ```env
-   MONGODB_URI=mongodb+srv://root:4556@cluster0.a1fqoim.mongodb.net/
-   DB_NAME=fpv_inventory
-   FRONTEND_ORIGIN=http://localhost:5173
-   ```
+# View frontend logs
+docker compose logs frontend
 
-6. **Start the backend server:**
-   ```bash
-   uvicorn main:app --reload --port 8000
-   ```
-
-   The API will be available at `http://localhost:8000`
-
-### Frontend Setup
-
-1. **Navigate to frontend directory:**
-   ```bash
-   cd fpv-inventory-react-server
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-3. **Create environment file (optional):**
-   Create a `.env` file in the frontend directory:
-   ```env
-   VITE_API_BASE=http://localhost:8000
-   ```
-
-4. **Start the development server:**
-   ```bash
-   npm run dev
-   ```
-
-   The frontend will be available at `http://localhost:5173`
-
-## 🗄️ Database Setup
-
-### MongoDB Atlas (Recommended)
-
-1. Create a MongoDB Atlas account at [mongodb.com](https://www.mongodb.com/cloud/atlas)
-2. Create a new cluster
-3. Get your connection string
-4. Update the `MONGODB_URI` in your backend `.env` file
-
-### Local MongoDB (Alternative)
-
-1. Install MongoDB locally
-2. Start MongoDB service
-3. Set `MONGODB_URI=mongodb://localhost:27017` in your `.env` file
-
-## 🚀 Running the Application
-
-1. **Start the backend:**
-   ```bash
-   cd fpv-inventory-backend
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   uvicorn main:app --reload --port 8000
-   ```
-
-2. **Start the frontend (in a new terminal):**
-   ```bash
-   cd fpv-inventory-react-server
-   npm run dev
-   ```
-
-3. **Access the application:**
-   - Frontend: http://localhost:5173
-   - Backend API: http://localhost:8000
-   - API Documentation: http://localhost:8000/docs
+# Restart a service
+docker compose restart backend
+```
 
 ## 📊 API Endpoints
 
@@ -163,21 +126,6 @@ The backend provides the following main endpoints:
 - `POST /assembly` - Assemble product
 - `POST /sales` - Create sale
 
-## 🔧 Development
-
-### Backend Development
-
-- The backend uses FastAPI with automatic API documentation
-- Database operations use Motor (async MongoDB driver)
-- CORS is configured for frontend communication
-
-### Frontend Development
-
-- Built with React 18 and Vite for fast development
-- Styled with Tailwind CSS
-- Uses Lucide React for icons
-- Responsive design for mobile and desktop
-
 ## 📝 Usage
 
 1. **Setup Parts**: Start by adding part classes and types
@@ -191,19 +139,38 @@ The backend provides the following main endpoints:
 
 ### Common Issues
 
-1. **CORS Errors**: Ensure the backend is running and CORS is properly configured
-2. **Database Connection**: Verify MongoDB URI and network access
-3. **Port Conflicts**: Make sure ports 8000 and 5173 are available
+1. **"Failed to fetch" Error**: 
+   - Check if backend is running: `docker compose logs backend`
+   - Verify API connection: http://localhost:8000/state
+
+2. **Empty Data**: 
+   - Ensure MongoDB Atlas URI is correct in `.env` file
+   - Check database connection in backend logs
+
+3. **Port Conflicts**: 
+   - Make sure ports 8000 and 3000 are available
+   - Check if other services are using these ports
 
 ### Logs
 
-- Backend logs: Check terminal where uvicorn is running
-- Frontend logs: Check browser console and terminal where npm run dev is running
+```bash
+# View all logs
+docker compose logs -f
+
+# View specific service logs
+docker compose logs backend
+docker compose logs frontend
+```
+
+## 🔧 Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MONGODB_URI` | MongoDB Atlas connection string | `mongodb+srv://root:4556@cluster0.a1fqoim.mongodb.net/` |
+| `DB_NAME` | Database name | `fpv_inventory` |
+| `FRONTEND_ORIGIN` | Frontend URL for CORS | `http://localhost:3000` |
+| `VITE_API_BASE` | Backend API URL | `http://localhost:8000` |
 
 ## 📄 License
 
 This project is for internal use. All rights reserved.
-
-## 🤝 Contributing
-
-For any issues or feature requests, please contact the development team.
