@@ -3280,10 +3280,11 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                           {state.partTypes.filter(pt=> !r.classId || pt.classId===r.classId).map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
                         </select>
                       </td>
-                      <td className="p-2"><NumberInput className="w-24" value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} /></td>
-                      <td className="p-2">{currency(avg)}</td>
-                      <td className="p-2 font-medium">{currency(avg * Number(r.qty||0))}</td>
-                      <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={()=> removeBomRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
+                      <td className="p-2">{part && part.unit !== 'pcs' ? '—' : (<NumberInput value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} />)}</td>
+                      <td className="p-2">{part && part.unit !== 'pcs' ? '—' : currency(avg)}</td>
+                      <td className="p-2 font-medium">{part && part.unit !== 'pcs' ? '—' : currency(avg * Number(r.qty || 0))}</td>
+                      <td className="p-2"><TextInput value={r.note} onChange={(v)=> updateBomRow(r.id, { note: v })} placeholder="Нотатка" /></td>
+                      <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeBomRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
                     </tr>
                   );
                 })}
@@ -3412,9 +3413,9 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                         </select>
                         <div className="text-xs text-gray-500">Од.: {part?.unit || 'pcs'}</div>
                       </td>
-                        <td className="p-2"><NumberInput value={r.qty} onChange={(v) => updateRow(r.id, { qty: Number(v) })} /></td>
-                        <td className="p-2">{currency(avg)}</td>
-                        <td className="p-2 font-medium">{currency(avg * Number(r.qty || 0))}</td>
+                        <td className="p-2">{part && part.unit !== 'pcs' ? '—' : (<NumberInput value={r.qty} onChange={(v) => updateRow(r.id, { qty: Number(v) })} />)}</td>
+                        <td className="p-2">{part && part.unit !== 'pcs' ? '—' : currency(avg)}</td>
+                        <td className="p-2 font-medium">{part && part.unit !== 'pcs' ? '—' : currency(avg * Number(r.qty || 0))}</td>
                         <td className="p-2"><TextInput value={r.note} onChange={(v)=> updateRow(r.id, { note: v })} placeholder="Нотатка" /></td>
                         <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeRow(r.id)}><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
