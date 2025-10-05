@@ -467,6 +467,7 @@ function PartsView({ state, dispatch }) {
   const [editClassName, setEditClassName] = useState("");
   const [editClassColor, setEditClassColor] = useState("");
   const [editClassIcon, setEditClassIcon] = useState("");
+  const [showAddClass, setShowAddClass] = useState(false);
   const [ptName, setPtName] = useState("");
   const [ptUnit, setPtUnit] = useState("pcs");
   const [ptThreshold, setPtThreshold] = useState("");
@@ -481,6 +482,8 @@ function PartsView({ state, dispatch }) {
   const [filterClassId, setFilterClassId] = useState("");
   const [filterTypeId, setFilterTypeId] = useState("");
   const [typeQuery, setTypeQuery] = useState("");
+  const [typePage, setTypePage] = useState(1);
+  const TYPE_PER_PAGE = 20;
 
   const classOptions = Array.isArray(state?.partClasses) ? state.partClasses : [];
   const typeOptions = Array.isArray(state?.partTypes) ? state.partTypes : [];
@@ -493,6 +496,42 @@ function PartsView({ state, dispatch }) {
   function renderClassIcon(name) {
     const IconComp = (name && ICONS[name]) || Package;
     return <IconComp className="w-4 h-4 mx-auto my-auto" />;
+  }
+  const [editClassOpen, setEditClassOpen] = useState(false);
+  const [editComboName, setEditComboName] = useState("");
+  const [editComboIcon, setEditComboIcon] = useState("");
+  useEffect(() => {
+    const sel = classOptions.find(c => c.id === filterClassId);
+    setEditComboName(sel?.name || "");
+    setEditComboIcon(sel?.icon || "");
+  }, [filterClassId, classOptions]);
+
+  function ClassDropdown({ value, options, onChange }) {
+    const [open, setOpen] = useState(false);
+    const selected = options.find(o => o.id === value) || null;
+    return (
+      <div className="relative">
+        <button type="button" className="w-full border rounded-xl px-3 py-2 bg-white flex items-center justify-between gap-2" onClick={() => setOpen(o => !o)}>
+          <span className="inline-flex items-center gap-2">
+            {selected ? renderClassIcon(selected.icon) : <span className="w-4 h-4" />}
+            <span>{selected ? selected.name : 'Всі'}</span>
+          </span>
+          <span className="text-gray-400">▼</span>
+        </button>
+        {open && (
+          <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto border bg-white rounded-xl shadow">
+            <button type="button" className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2" onClick={() => { onChange(""); setOpen(false); }}>
+              <span className="inline-flex items-center gap-2"><span className="w-4 h-4" /> Всі</span>
+            </button>
+            {options.map(opt => (
+              <button key={opt.id} type="button" className="w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2" onClick={() => { onChange(opt.id); setOpen(false); }}>
+                <span className="inline-flex items-center gap-2">{renderClassIcon(opt.icon)} {opt.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   }
   const filteredTypeOptionsByFilter = filterClassId
     ? typeOptions.filter(t => t.classId === filterClassId)
@@ -513,6 +552,13 @@ function PartsView({ state, dispatch }) {
     }
     return rows;
   }, [typeOptions, filterClassId, filterTypeId, typeQuery]);
+
+  const typeTotalPages = Math.max(1, Math.ceil(filteredTypes.length / TYPE_PER_PAGE));
+  useEffect(() => { if (typePage > typeTotalPages) setTypePage(typeTotalPages); }, [typeTotalPages]);
+  useEffect(() => { setTypePage(1); }, [filterClassId, filterTypeId, typeQuery]);
+  const typePageStartIndex = filteredTypes.length === 0 ? 0 : (typePage - 1) * TYPE_PER_PAGE + 1;
+  const typePageEndIndex = Math.min(filteredTypes.length, typePage * TYPE_PER_PAGE);
+  const typePageRows = filteredTypes.slice((typePage - 1) * TYPE_PER_PAGE, (typePage - 1) * TYPE_PER_PAGE + TYPE_PER_PAGE);
 
   const activeFilterChips = useMemo(() => {
     const chips = [];
@@ -672,47 +718,119 @@ function PartsView({ state, dispatch }) {
 
   return (
     <div className="grid gap-6">
-      <Section title="Класи деталей" icon={Package}>
-        <Card>
-          <div className="grid md:grid-cols-4 gap-3 items-end">
-            <div className="md:col-span-2">
-              <div className="text-xs text-gray-500 mb-1">Назва класу</div>
-              <TextInput value={className} onChange={setClassName} placeholder="Напр., Елементи, Нікелева стрічка, 3D-друк" />
+      <Section title="Класи деталей" icon={Package} right={(
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center gap-2"
+            onClick={() => setShowAddClass(v => !v)}
+          >
+            <Plus className="w-4 h-4" /> {showAddClass ? 'Сховати' : 'Додати клас'}
+          </button>
+        </div>
+      )}>
+        {showAddClass && (
+          <Card>
+            <div className="grid md:grid-cols-4 gap-3 items-end">
+              <div className="md:col-span-2">
+                <div className="text-xs text-gray-500 mb-1">Назва класу</div>
+                <TextInput value={className} onChange={setClassName} placeholder="Напр., Елементи, Нікелева стрічка, 3D-друк" />
+              </div>
+              <div className="md:col-span-1">
+                <div className="text-xs text-gray-500 mb-1">Іконка</div>
+                <div className="relative">
+                  <select className="w-full border rounded-xl px-3 py-2 bg-white" value={classIcon} onChange={(e)=> setClassIcon(e.target.value)}>
+                    <option value="">— Іконка —</option>
+                    {iconChoices.map(k => (
+                      <option key={k} value={k}>{k}</option>
+                    ))}
+                  </select>
+                  {classIcon && (
+                    <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">
+                      {renderClassIcon(classIcon)}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div>
+                <button
+                  className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
+                  onClick={() => {
+                    if (!className.trim()) return;
+                    dispatch({ type: "ADD_PART_CLASS", name: className, color: undefined, icon: classIcon || undefined });
+                    setClassName(""); setClassIcon(""); setShowAddClass(false);
+                  }}
+                >
+                  <Save className="w-4 h-4" /> Зберегти клас
+                </button>
+                <button
+                  className="ml-2 rounded-xl border px-4 py-2 hover:bg-gray-50"
+                  onClick={() => { setShowAddClass(false); }}
+                >Скасувати</button>
+              </div>
             </div>
-            <div className="md:col-span-1">
+          </Card>
+        )}
+        <div className="mt-3 grid md:grid-cols-3 gap-3 items-end">
+          <div>
+            <div className="text-xs text-gray-500 mb-1">Клас</div>
+            <ClassDropdown value={filterClassId} options={classOptions} onChange={(v) => { setFilterClassId(v); setFilterTypeId(""); }} />
+          </div>
+          <div className="flex gap-2">
+            <button
+              className="rounded-xl border px-3 py-2 hover:bg-gray-50"
+              disabled={!filterClassId}
+              onClick={() => setEditClassOpen(v => !v)}
+            >{editClassOpen ? 'Сховати' : 'Редагувати'}</button>
+          </div>
+        </div>
+        {editClassOpen && filterClassId && (
+          <div className="mt-3 p-3 rounded-2xl border bg-white shadow-sm grid md:grid-cols-3 gap-3">
+            <div>
               <div className="text-xs text-gray-500 mb-1">Іконка</div>
               <div className="relative">
-                <select className="w-full border rounded-xl px-3 py-2 bg-white" value={classIcon} onChange={(e)=> setClassIcon(e.target.value)}>
+                <select className="w-full border rounded-xl px-3 py-2 bg-white" value={editComboIcon} onChange={(e)=> setEditComboIcon(e.target.value)}>
                   <option value="">— Іконка —</option>
                   {iconChoices.map(k => (
                     <option key={k} value={k}>{k}</option>
                   ))}
                 </select>
-                {classIcon && (
+                {editComboIcon && (
                   <div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">
-                    {renderClassIcon(classIcon)}
+                    {renderClassIcon(editComboIcon)}
                   </div>
                 )}
               </div>
             </div>
             <div>
+              <div className="text-xs text-gray-500 mb-1">Назва класу</div>
+              <TextInput value={editComboName} onChange={setEditComboName} placeholder="Назва класу" />
+            </div>
+            <div className="flex items-end gap-2">
               <button
-                className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
-                onClick={() => {
-                  if (!className.trim()) return;
-                  dispatch({ type: "ADD_PART_CLASS", name: className, color: undefined, icon: classIcon || undefined });
-                  setClassName(""); setClassIcon("");
+                className="rounded-xl bg-gray-900 text-white px-4 py-2"
+                onClick={async () => {
+                  const current = classOptions.find(c => c.id === filterClassId);
+                  try {
+                    await dispatch({ type: 'UPDATE_PART_CLASS', id: filterClassId, name: (editComboName || '').trim() || (current?.name || ''), color: undefined, icon: editComboIcon || undefined });
+                    setEditClassOpen(false);
+                  } catch (e) { alert(String(e)); }
                 }}
-              >
-                <Plus className="w-4 h-4" /> Додати клас
-              </button>
+              >Зберегти</button>
+              <button
+                className="rounded-xl border px-4 py-2 hover:bg-gray-50"
+                onClick={() => {
+                  const sel = classOptions.find(c => c.id === filterClassId);
+                  setEditComboName(sel?.name || '');
+                  setEditComboIcon(sel?.icon || '');
+                  setEditClassOpen(false);
+                }}
+              >Скасувати</button>
             </div>
           </div>
-        </Card>
-        <div className="mt-3">
-        <Table columns={classCols} rows={state.partClasses} empty="Немає класів" />
-        </div>
+        )}
       </Section>
+
+      <div className="my-2 h-px bg-gray-200" />
 
       <Section
         title="Види деталей"
@@ -824,7 +942,40 @@ function PartsView({ state, dispatch }) {
           </div>
         )}
 
-        <Table columns={typeCols} rows={filteredTypes} empty="Немає видів деталей" />
+        <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
+          <div>
+            <span>Показано {typePageStartIndex}–{typePageEndIndex}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className={`px-2 py-1 rounded-lg border ${typePage <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => typePage > 1 && setTypePage(typePage - 1)}
+              disabled={typePage <= 1}
+            >Назад</button>
+            <span className="px-2">Стор. {typePage} з {typeTotalPages}</span>
+            <button
+              className={`px-2 py-1 rounded-lg border ${typePage >= typeTotalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+              onClick={() => typePage < typeTotalPages && setTypePage(typePage + 1)}
+              disabled={typePage >= typeTotalPages}
+            >Вперед</button>
+          </div>
+        </div>
+
+        <Table columns={typeCols} rows={typePageRows} empty="Немає видів деталей" />
+
+        <div className="mt-2 flex items-center justify-center gap-2">
+          <button
+            className={`px-3 py-1 rounded-xl border text-sm ${typePage <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+            onClick={() => typePage > 1 && setTypePage(typePage - 1)}
+            disabled={typePage <= 1}
+          >Назад</button>
+          <span className="px-2 text-xs text-gray-500">Стор. {typePage} з {typeTotalPages}</span>
+          <button
+            className={`px-3 py-1 rounded-xl border text-sm ${typePage >= typeTotalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
+            onClick={() => typePage < typeTotalPages && setTypePage(typePage + 1)}
+            disabled={typePage >= typeTotalPages}
+          >Вперед</button>
+        </div>
       </Section>
     </div>
   );
@@ -2280,7 +2431,7 @@ function InventoryView({ state, dispatch }) {
       const part = partById(r.partTypeId);
       if (!part || part.unit === 'pcs') return '—';
       return (
-        <button 
+        <button
           className={`px-3 py-1 rounded-xl border text-sm ${part.runningLow ? 'bg-red-100 text-red-700 border-red-300' : 'bg-gray-100 text-gray-700 border-gray-300'}`}
           onClick={async () => {
             try {
