@@ -250,7 +250,7 @@ export default function App() {
           </aside>
         )}
         <main className="space-y-6">
-        {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
+        {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} applyPartialState={applyPartialState} />}
         {tab === "parts" && <PartsView state={state} dispatch={dispatch} applyPartialState={applyPartialState} onOpenSupplier={(id)=>{ setTab('suppliers'); setFocusSupplierId(id); }} />}
         {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} focusSupplierId={focusSupplierId} clearFocus={()=> setFocusSupplierId(null)} />}
         {tab === "customers" && <CustomersView state={state} refresh={refresh} applyPartialState={applyPartialState} />}
@@ -258,7 +258,7 @@ export default function App() {
         {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} applyPartialState={applyPartialState} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
-        {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
+        {tab === "sales" && <SalesView state={state} dispatch={dispatch} applyPartialState={applyPartialState} />}
         {tab === "settings" && <SettingsView state={state} dispatch={dispatch} serverMode/>}
       </main>
       </div>
@@ -422,7 +422,7 @@ function OrdersTable({ state }) {
 }
 
 // ---------------------- Views (same UI, calls dispatch) ----------------------
-function BalanceView({ state, dispatch, balance }) {
+function BalanceView({ state, dispatch, balance, applyPartialState }) {
   const [amount, setAmount] = useState(0);
   const [note, setNote] = useState("");
   const [type, setType] = useState("deposit");
@@ -451,8 +451,30 @@ function BalanceView({ state, dispatch, balance }) {
     { key: "note", header: "Нотатка", cell: (r) => (
       r.note || ''
     ) },
-    { key: "actions", header: "—", thClass: "w-28", cell: (r) => (
-      <div className="text-xs text-gray-400">—</div>
+    { key: "actions", header: "—", thClass: "w-20", cell: (r) => (
+      <div className="flex items-center gap-2">
+        <button
+          className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
+          title="Видалити"
+          onClick={async()=>{
+            if (!confirm('Видалити запис балансу? Дію не можна скасувати.')) return;
+            try {
+              await api.deleteBalanceEntry(r.id);
+              const s = await api.getState();
+              applyPartialState({ balanceEntries: s.balanceEntries });
+            } catch(e){
+              const msg = String(e||'');
+              if (msg.includes('403') || msg.toLowerCase().includes('forbidden')) {
+                alert('Видалення заборонено. Увімкніть дозвол у Налаштуваннях → "Дозволити видалення записів балансу"');
+              } else {
+                alert(msg);
+              }
+            }
+          }}
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
     ) },
   ];
 
@@ -663,9 +685,20 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
                     if (newQty === null) return;
                     const newPrice = prompt('Ціна за од.', String(r.pricePerUnit));
                     if (newPrice === null) return;
-                    api.updateSale(r.id, { qty: Number(newQty), pricePerUnit: Number(newPrice) })
-                      .then(async()=>{ const s = await api.getState(); applyPartialState({ sales: s.sales }); })
-                      .catch(e=> alert(String(e)));
+                    (async()=>{
+                      try {
+                        const wasAllocated = !!r.allocated;
+                        if (wasAllocated) {
+                          try { await api.unallocateSale(r.id); } catch(_){}
+                        }
+                        await api.updateSale(r.id, { qty: Number(newQty), pricePerUnit: Number(newPrice) });
+                        if (wasAllocated) {
+                          try { await api.allocateSale(r.id); } catch (e) { alert(String(e)); }
+                        }
+                        const s = await api.getState();
+                        applyPartialState({ sales: s.sales, productStock: s.productStock });
+                      } catch(e){ alert(String(e)); }
+                    })();
                   }}
                 >Редагувати</button>
                 <button
@@ -1743,11 +1776,11 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       await api.updatePurchase(id, { vendor: editVendor, date: editDate, items: editItems, additionalCosts: editCosts });
       // also refresh inventory/stock snapshot in background
       const s = await api.getState();
-      applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+      applyPartialState({ inventory: s.inventory, productStock: s.productStock, balanceEntries: s.balanceEntries });
     } catch (e) {
       // fallback to server truth on error
       const s = await api.getState();
-      applyPartialState({ purchases: s.purchases, inventory: s.inventory, productStock: s.productStock });
+      applyPartialState({ purchases: s.purchases, inventory: s.inventory, productStock: s.productStock, balanceEntries: s.balanceEntries });
       alert(String(e));
     }
   }
@@ -2515,13 +2548,16 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         icon={ShoppingCart}
         right={(
           <div className="flex items-center gap-2">
-            <button
-              className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showArchived ? 'bg-orange-100 border-orange-300 text-orange-800' : 'bg-white hover:bg-gray-50'}`}
-              onClick={() => setShowArchived((v) => !v)}
-              title={showArchived ? 'Показати активні' : 'Показати архів'}
-            >
-              <Archive className="w-4 h-4" /> {showArchived ? 'Архів' : 'Активні'}
-            </button>
+            <div className="inline-flex rounded-xl overflow-hidden border">
+              <button
+                className={`px-3 py-1 text-sm ${!showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+                onClick={()=> setShowArchived(false)}
+              >Активні</button>
+              <button
+                className={`px-3 py-1 text-sm ${showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+                onClick={()=> setShowArchived(true)}
+              >Архів</button>
+            </div>
             <button
               className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
               onClick={() => setShowFilters((v) => !v)}
@@ -3379,7 +3415,7 @@ function AssemblyView({ state, dispatch }) {
       </Section>
 
       {product && (
-        <Section title="Потрібні деталі" icon={Wrench}>
+      <Section title="Потрібні деталі" icon={Wrench}>
           <Table
             columns={[
               { key: "name", header: "Деталь" },
@@ -3399,7 +3435,7 @@ function AssemblyView({ state, dispatch }) {
   );
 }
 
-function SalesView({ state, dispatch }) {
+function SalesView({ state, dispatch, applyPartialState }) {
   const [customers, setCustomers] = useState([]);
   useEffect(() => { api.listCustomers().then(setCustomers).catch(() => setCustomers([])); }, []);
 
@@ -3407,6 +3443,15 @@ function SalesView({ state, dispatch }) {
   const [saleDate, setSaleDate] = useState(todayISO());
   const [saleCustomerId, setSaleCustomerId] = useState("");
   const [saleNote, setSaleNote] = useState("");
+
+  // Toggle Active/Archived Orders
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedSales, setArchivedSales] = useState([]);
+  useEffect(() => {
+    if (showArchived) {
+      api.listArchivedSales().then(setArchivedSales).catch(() => setArchivedSales([]));
+    }
+  }, [showArchived]);
 
   function addSaleRow() {
     const pid = state.products[0]?.id || "";
@@ -3505,11 +3550,9 @@ function SalesView({ state, dispatch }) {
                         await api.sale({ productId: r.productId, qty: Number(r.qty||0), pricePerUnit: Number(r.pricePerUnit||0), date: saleDate, customer: customerName, note: saleNote });
                       }
                       setSaleRows([]); setSaleNote("");
-                      // refresh state: sales and balance are in state; productStock also changes
+                      // Refresh UI with latest data so the new orders appear immediately
                       const s = await api.getState();
-                      // update sales in place so history enables immediately
-                      // (parent holds state; quick-page refresh via reload may be heavy)
-                      // We'll just alert success here; history section will reflect after navigation
+                      applyPartialState({ sales: s.sales, productStock: s.productStock, balanceEntries: s.balanceEntries });
                       alert('Замовлення збережено');
                     } catch(e){ alert(String(e)); }
                   }}
@@ -3521,7 +3564,22 @@ function SalesView({ state, dispatch }) {
         )}
       </Section>
 
-      <Section title="Замовлення" icon={DollarSign}>
+      <Section
+        title="Замовлення"
+        icon={DollarSign}
+        right={(
+          <div className="inline-flex rounded-xl overflow-hidden border">
+            <button
+              className={`px-3 py-1 text-sm ${!showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+              onClick={()=> setShowArchived(false)}
+            >Активні</button>
+            <button
+              className={`px-3 py-1 text-sm ${showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+              onClick={()=> setShowArchived(true)}
+            >Архів</button>
+          </div>
+        )}
+      >
         {(() => {
           const colsOrders = [
             { key: "date", header: "Дата" },
@@ -3532,37 +3590,145 @@ function SalesView({ state, dispatch }) {
             { key: "afterTax", header: "Після податку (0.94)", cell: (s) => currency(Number(s.total||0)*0.94) },
             { key: "status", header: "Статуси", cell: (r) => (
               <div className="flex items-center gap-2 text-xs">
-                <button className={`px-2 py-0.5 rounded-full border ${r.paid ? 'bg-green-50 border-green-200 text-green-700' : ''}`} onClick={async()=>{
-                  try { if (r.paid) { await api.unpaySale(r.id); } else { await api.paySale(r.id); }
-                    const s = await api.getState(); applyPartialState({ sales: s.sales, balanceEntries: s.balanceEntries }); } catch(e){ alert(String(e)); }
-                }}>Оплачений</button>
-                <button className={`px-2 py-0.5 rounded-full border ${r.allocated ? 'bg-blue-50 border-blue-200 text-blue-700' : ''}`} onClick={async()=>{
-                  try { if (r.allocated) { await api.unallocateSale(r.id); } else { await api.allocateSale(r.id); }
-                    const s = await api.getState(); applyPartialState({ sales: s.sales, productStock: s.productStock }); } catch(e){ alert(String(e)); }
-                }}>Доданий до замовлення</button>
-                <button className={`px-2 py-0.5 rounded-full border ${r.shipped ? 'bg-purple-50 border-purple-200 text-purple-700' : ''}`} onClick={async()=>{
-                  try { if (r.shipped) { await api.unshipSale(r.id); } else { await api.shipSale(r.id); }
-                    const s = await api.getState(); applyPartialState({ sales: s.sales }); } catch(e){ alert(String(e)); }
-                }}>Відправлений</button>
-                <button className={`px-2 py-0.5 rounded-full border ${r.completed ? 'bg-gray-900 text-white border-gray-900' : ''}`} onClick={async()=>{
-                  try { if (r.completed) { await api.uncompleteSale(r.id); } else { await api.completeSale(r.id); }
-                    const s = await api.getState(); applyPartialState({ sales: s.sales }); } catch(e){ alert(String(e)); }
-                }}>Повністю виконано</button>
+                <div className="relative">
+                  <select
+                    className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${r.paid ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}
+                    value={r.paid ? 'paid' : 'unpaid'}
+                    onChange={async(e)=>{
+                      const v = e.target.value;
+                      try {
+                        if (v === 'paid' && !r.paid) {
+                          await api.paySale(r.id);
+                        } else if (v === 'unpaid' && r.paid) {
+                          await api.unpaySale(r.id);
+                        }
+                        const s = await api.getState();
+                        applyPartialState({ sales: s.sales, balanceEntries: s.balanceEntries });
+                      } catch(err){ alert(String(err)); }
+                    }}
+                  >
+                    <option value="paid">Оплачений</option>
+                    <option value="unpaid">Неоплачений</option>
+                  </select>
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+                </div>
+                <div className="relative">
+                  <select
+                    className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${r.allocated ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}
+                    value={r.allocated ? 'allocated' : 'unallocated'}
+                    onChange={async(e)=>{
+                      const v = e.target.value;
+                      try {
+                        if (v === 'allocated' && !r.allocated) {
+                          await api.allocateSale(r.id);
+                        } else if (v === 'unallocated' && r.allocated) {
+                          await api.unallocateSale(r.id);
+                        }
+                        const s = await api.getState();
+                        applyPartialState({ sales: s.sales, productStock: s.productStock });
+                      } catch(err){ alert(String(err)); }
+                    }}
+                  >
+                    <option value="allocated">Взятий зі складу</option>
+                    <option value="unallocated">Не виготовлений</option>
+                  </select>
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+                </div>
+                <div className="relative">
+                  <select
+                    className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${r.shipped ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'} ${!r.allocated ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    value={r.shipped ? 'shipped' : 'not_shipped'}
+                    disabled={!r.allocated}
+                    title={!r.allocated ? 'Спочатку позначте: Взятий зі складу' : ''}
+                    onChange={async(e)=>{
+                      const v = e.target.value;
+                      try {
+                        if (v === 'shipped' && !r.allocated) {
+                          alert('Спочатку позначте: Взятий зі складу');
+                          return;
+                        }
+                        if (v === 'shipped' && !r.shipped) {
+                          await api.shipSale(r.id);
+                        } else if (v === 'not_shipped' && r.shipped) {
+                          await api.unshipSale(r.id);
+                        }
+                        const s = await api.getState();
+                        applyPartialState({ sales: s.sales });
+                      } catch(err){ alert(String(err)); }
+                    }}
+                  >
+                    <option value="shipped">Відправлений</option>
+                    <option value="not_shipped">Не відправлений</option>
+                  </select>
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+                </div>
               </div>
             ) },
             { key: 'actions', header: '—', thClass: 'w-40', cell: (r) => (
               <div className="flex items-center gap-2">
-                <button className={`px-2 py-0.5 rounded-full border ${r.archived ? 'bg-orange-50 border-orange-200 text-orange-700' : ''}`} onClick={async()=>{
-                  try {
-                    await api.setSaleArchived(r.id, !r.archived);
-                    const s = await api.getState();
-                    applyPartialState({ sales: s.sales });
-                  } catch(e){ alert(String(e)); }
-                }}>{r.archived ? 'Розархівувати' : 'Архівувати'}</button>
+                <button
+                  className="p-2 rounded-lg border hover:bg-gray-50"
+                  title="Редагувати"
+                  onClick={async()=>{
+                    const newQty = prompt('К-сть', String(r.qty));
+                    if (newQty === null) return;
+                    const newPrice = prompt('Ціна за од.', String(r.pricePerUnit));
+                    if (newPrice === null) return;
+                    try {
+                      const wasAllocated = !!r.allocated;
+                      if (wasAllocated) {
+                        try { await api.unallocateSale(r.id); } catch(_){}
+                      }
+                      await api.updateSale(r.id, { qty: Number(newQty), pricePerUnit: Number(newPrice) });
+                      if (wasAllocated) {
+                        try { await api.allocateSale(r.id); } catch (e) { alert(String(e)); }
+                      }
+                      const s = await api.getState();
+                      applyPartialState({ sales: s.sales, productStock: s.productStock });
+                    } catch(e) { alert(String(e)); }
+                  }}
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+                <button
+                  className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
+                  title="Видалити"
+                  onClick={async()=>{
+                    if (!confirm('Видалити замовлення? Дію не можна скасувати.')) return;
+                    try {
+                      await api.deleteSale(r.id);
+                      const s = await api.getState();
+                      applyPartialState({ sales: s.sales, balanceEntries: s.balanceEntries });
+                    } catch(e){ alert(String(e)); }
+                  }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+                <button
+                  className="p-2 rounded-lg border hover:bg-gray-50"
+                  title={r.archived ? 'Розархівувати' : 'Архівувати'}
+                  onClick={async()=>{
+                    try {
+                      await api.setSaleArchived(r.id, !r.archived);
+                      if (showArchived) {
+                        // Remove from archived list and refresh active list in background
+                        setArchivedSales(list => list.filter(x => x.id !== r.id));
+                        const s = await api.getState();
+                        applyPartialState({ sales: s.sales });
+                      } else {
+                        // Remove from active list; it will appear in archived view
+                        applyPartialState({ sales: (state.sales || []).filter(x => x.id !== r.id) });
+                      }
+                    } catch(e){ alert(String(e)); }
+                  }}
+                >
+                  <Archive className="w-4 h-4" />
+                </button>
               </div>
             )},
           ];
-          return <Table columns={colsOrders} rows={state.sales} empty="Замовлень поки немає" />;
+          const rows = showArchived ? archivedSales : state.sales;
+          return <Table columns={colsOrders} rows={rows} empty={showArchived ? 'Архів порожній' : 'Замовлень поки немає'} />;
         })()}
       </Section>
     </div>
@@ -3570,6 +3736,15 @@ function SalesView({ state, dispatch }) {
 }
 
 function SettingsView({ state, dispatch, serverMode }) {
+  const [allowDeleteBalance, setAllowDeleteBalance] = useState(false);
+  useEffect(() => { api.getBalanceRules().then(r=> setAllowDeleteBalance(!!r.allowDelete)).catch(()=>{}); }, []);
+  async function toggleAllowDeleteBalance() {
+    try {
+      const next = !allowDeleteBalance;
+      await api.setBalanceRules({ allowDelete: next });
+      setAllowDeleteBalance(next);
+    } catch(e){ alert(String(e)); }
+  }
   async function exportJSON() {
     // fetch live state from server
     const s = await api.getState();
@@ -3630,6 +3805,10 @@ function SettingsView({ state, dispatch, serverMode }) {
         <button className="rounded-xl border px-4 py-2 flex items-center gap-2 cursor-not-allowed opacity-60" title="Скидання ще не підключено">
           <Trash2 className="w-4 h-4" /> Скинути всі дані (н/д)
         </button>
+        <label className="ml-auto inline-flex items-center gap-2 text-sm border rounded-xl px-3 py-2">
+          <input type="checkbox" className="scale-110" checked={allowDeleteBalance} onChange={toggleAllowDeleteBalance} />
+          Дозволити видалення записів балансу
+        </label>
       </div>
       <div className="text-sm text-gray-500">
         Ви працюєте у <b>серверному режимі</b>: всі дані пишуться у MongoDB через FastAPI.

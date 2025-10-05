@@ -66,6 +66,8 @@ export const api = {
   // Settings
   getInventoryFilters: () => http("GET", "/settings/inventory-filters"),
   setInventoryFilters: (o) => http("POST", "/settings/inventory-filters", o),
+  getBalanceRules: () => http("GET", "/settings/balance-rules"),
+  setBalanceRules: (o) => http("POST", "/settings/balance-rules", o),
   // Customers
   listCustomers: () => http("GET", "/customers"),
   addCustomer: (o) => http("POST", "/customers", o),

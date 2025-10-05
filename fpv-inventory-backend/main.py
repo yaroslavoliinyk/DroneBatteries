@@ -143,7 +143,7 @@ async def rebuild_inventory_and_stock() -> None:
     Recompute inventory quantities/avg costs and product stock from persisted events:
     - Delivered purchases add to inventory; additional costs are allocated by value share
     - Assemblies deduct parts from inventory and increase product stock
-    - Sales decrease product stock
+    - Allocated sales decrease product stock (unallocated sales should not affect stock)
     """
     # reset
     await c_inventory.delete_many({})
@@ -177,8 +177,8 @@ async def rebuild_inventory_and_stock() -> None:
             await upsert_inventory(b["partTypeId"], -float(b.get("qty", 0)) * q, 0.0)
         await inc_product_stock(product["id"], q)
 
-    # 3) Apply sales
-    async for s in c_sales.find():
+    # 3) Apply only allocated sales
+    async for s in c_sales.find({"allocated": True}):
         await inc_product_stock(s.get("productId"), -int(s.get("qty", 0)))
 
 async def inc_product_stock(product_id: str, qty: int) -> None:
@@ -424,6 +424,20 @@ async def set_inventory_filters(body: InventoryFilters):
     await settings.update_one({"_id": "inventory_filters"}, {"$set": payload}, upsert=True)
     return {"ok": True}
 
+class BalanceRules(BaseModel):
+    allowDelete: bool = False
+
+@app.get("/settings/balance-rules")
+async def get_balance_rules():
+    doc = await settings.find_one({"_id": "balance_rules"})
+    return {"allowDelete": bool((doc or {}).get("allowDelete", False))}
+
+@app.post("/settings/balance-rules")
+async def set_balance_rules(body: BalanceRules):
+    payload = {"_id": "balance_rules", "allowDelete": bool(body.allowDelete)}
+    await settings.update_one({"_id": "balance_rules"}, {"$set": payload}, upsert=True)
+    return {"ok": True}
+
 # Balance
 @app.get("/balance/entries")
 async def list_balance():
@@ -451,7 +465,11 @@ async def update_balance_entry(entry_id: str, body: UpdateBalanceEntryRequest):
 
 @app.delete("/balance/entries/{entry_id}")
 async def delete_balance_entry(entry_id: str):
-    raise HTTPException(403, "Balance entries cannot be deleted")
+    rules = await settings.find_one({"_id": "balance_rules"})
+    if not rules or not bool(rules.get("allowDelete", False)):
+        raise HTTPException(403, "Balance entries cannot be deleted")
+    await c_balance.delete_one({"_id": entry_id})
+    return {"ok": True}
 
 @app.get("/balance/value")
 async def balance_value():
@@ -1248,14 +1266,19 @@ async def pay_sale(sale_id: str):
     if s.get("paid"):
         return {"ok": True, "already": True}
     net_amount = float(s.get("total", 0)) * 0.94
+    # enrich note with product and qty
+    prod = await c_products.find_one({"_id": s.get("productId")})
+    prod_name = (prod or {}).get("name") or s.get("productId")
+    qty = int(s.get("qty", 0))
     be = {
         "id": str(ObjectId()),
         "_id": None,
         "date": s.get("date") or now_iso(),
         "type": "sale",
         "amount": net_amount,
-        "note": f"Оплата продажу після податку (0.94) — {s.get('customer') or ''}",
+        "note": f"Оплата замовлення (після податку 0.94) — {s.get('customer') or ''}: {prod_name} × {qty}",
         "tag": "Продаж",
+        "refSaleId": sale_id,
     }
     be["_id"] = be["id"]
     await c_balance.insert_one(be)
@@ -1302,6 +1325,8 @@ async def unpay_sale(sale_id: str):
     if not s:
         raise HTTPException(404, "Sale not found")
     await c_sales.update_one({"_id": sale_id}, {"$set": {"paid": False}})
+    # Remove linked balance entries by reference
+    await c_balance.delete_many({"type": "sale", "refSaleId": sale_id})
     return {"ok": True}
 
 @app.post("/sales/{sale_id}/unallocate")
