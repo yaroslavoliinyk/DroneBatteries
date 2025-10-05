@@ -2608,16 +2608,6 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         icon={ShoppingCart}
         right={(
           <div className="flex items-center gap-2">
-            <div className="inline-flex rounded-xl overflow-hidden border">
-              <button
-                className={`px-3 py-1 text-sm ${!showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
-                onClick={()=> setShowArchived(false)}
-              >Активні</button>
-              <button
-                className={`px-3 py-1 text-sm ${showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
-                onClick={()=> setShowArchived(true)}
-              >Архів</button>
-            </div>
             <button
               className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
               onClick={() => setShowFilters((v) => !v)}
@@ -2628,7 +2618,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               )}
             </button>
             <button
-              className="px-3 py-2 rounded-xl border flex items-center gap-2 bg-white hover:bg-gray-50"
+              className="px-3 py-2 rounded-xl border flex items-center gap-2 bg:white hover:bg-gray-50"
               title="Скинути фільтри"
               onClick={() => {
                 setDeliveryFilter("all");
@@ -2767,6 +2757,20 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
           </div>
         )}
 
+        {/* Moved Active/Archive toggle here, above the table, aligned to the right */}
+        <div className="mb-2 flex items-center justify-end">
+          <div className="inline-flex rounded-xl overflow-hidden border">
+            <button
+              className={`px-3 py-1 text-sm ${!showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+              onClick={()=> setShowArchived(false)}
+            >Активні</button>
+            <button
+              className={`px-3 py-1 text-sm ${showArchived ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
+              onClick={()=> setShowArchived(true)}
+            >Архів</button>
+          </div>
+        </div>
+
         <div className="flex items-center justify-between mb-2 text-xs text-gray-500">
           <div>
             Знайдено: {filteredPurchases.length}
@@ -2898,27 +2902,26 @@ function InventoryView({ state, dispatch, applyPartialState }) {
     { key: "qty", header: "Кількість", cell: (r) => {
       const part = partById(r.partTypeId);
       if (!part) return r.qty;
-      if (part.unit !== 'pcs') {
-        const value = (part.stockStatus === 'none') ? 'none' : (part.runningLow ? 'low' : 'ok');
-        const clsByValue = (v) => v==='none' ? 'bg-rose-100 border-rose-300 text-rose-700' : v==='low' ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-green-50 border-green-200 text-green-700';
-        return (
-          <span className={`px-2 py-0.5 rounded-full text-xs border ${clsByValue(value)}`}>
-            {value === 'none' ? 'Немає' : value === 'low' ? 'Закінчується' : 'Достатньо'}
-          </span>
-        );
-      }
+      if (part.unit !== 'pcs') return '—';
       return r.qty;
     } },
-    { key: "avgCost", header: "Сер. собівартість", cell: (r) => currency(r.avgCost) },
-    { key: "total", header: "Сума", cell: (r) => currency(r.avgCost * r.qty) },
+    { key: "avgCost", header: "Сер. собівартість", cell: (r) => {
+      const part = partById(r.partTypeId);
+      if (part && part.unit !== 'pcs') return '—';
+      return currency(r.avgCost);
+    } },
+    { key: "total", header: "Сума", cell: (r) => {
+      const part = partById(r.partTypeId);
+      if (part && part.unit !== 'pcs') return '—';
+      return currency(r.avgCost * r.qty);
+    } },
     { key: "status", header: "Статус", cell: (r) => {
       const part = partById(r.partTypeId);
       if (!part) return '—';
-      // If qty is zero — show explicit "Немає"
-      if (Number(r.qty) <= 0) {
-        return <span className="px-2 py-0.5 rounded-full text-xs border bg-rose-100 border-rose-300 text-rose-700">Немає</span>;
-      }
       if (part.unit === 'pcs') {
+        if (Number(r.qty) <= 0) {
+          return <span className="px-2 py-0.5 rounded-full text-xs border bg-rose-100 border-rose-300 text-rose-700">Немає</span>;
+        }
         const threshold = part.runningLowThreshold ?? 10;
         const low = Number(r.qty) <= Number(threshold);
         return low ? (
@@ -2950,9 +2953,9 @@ function InventoryView({ state, dispatch, applyPartialState }) {
               }
             }}
           >
-            <option value="ok">Достатньо</option>
-            <option value="low">Закінчується</option>
             <option value="none">Немає</option>
+            <option value="low">Закінчується</option>
+            <option value="ok">Достатньо</option>
           </select>
           <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
         </div>

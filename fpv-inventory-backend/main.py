@@ -567,6 +567,8 @@ class UpdatePartTypeRequest(BaseModel):
     unit: Optional[str] = None
     supplierId: Optional[str] = None
     note: Optional[str] = None
+    layer: Optional[str] = None
+    packParallel: Optional[str] = None
     # deprecated inputs ignored if provided
     manufacturer: Optional[str] = None
     sku: Optional[str] = None
