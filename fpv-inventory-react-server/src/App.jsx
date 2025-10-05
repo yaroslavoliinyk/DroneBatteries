@@ -253,7 +253,7 @@ export default function App() {
         {tab === "parts" && <PartsView state={state} dispatch={dispatch} applyPartialState={applyPartialState} onOpenSupplier={(id)=>{ setTab('suppliers'); setFocusSupplierId(id); }} />}
         {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} focusSupplierId={focusSupplierId} clearFocus={()=> setFocusSupplierId(null)} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
-        {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} />}
+        {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} applyPartialState={applyPartialState} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
         {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
@@ -429,6 +429,7 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
   const [filterTypeId, setFilterTypeId] = useState("");
   const [typeQuery, setTypeQuery] = useState("");
   const [typePage, setTypePage] = useState(1);
+  const [filterProductId, setFilterProductId] = useState("");
   const TYPE_PER_PAGE = 20;
 
   const classOptions = Array.isArray(state?.partClasses) ? state.partClasses : [];
@@ -487,6 +488,12 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
     let rows = typeOptions;
     if (filterClassId) rows = rows.filter(t => t.classId === filterClassId);
     if (filterTypeId) rows = rows.filter(t => t.id === filterTypeId);
+    if (filterProductId) {
+      const usedIds = new Set((state.products||[])
+        .filter(p => p.id === filterProductId)
+        .flatMap(p => (p.bom||[]).map(b => b.partTypeId)));
+      rows = rows.filter(t => usedIds.has(t.id));
+    }
     if (typeQuery.trim()) {
       const q = typeQuery.trim().toLowerCase();
       rows = rows.filter(t =>
@@ -496,7 +503,7 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
       );
     }
     return rows;
-  }, [typeOptions, filterClassId, filterTypeId, typeQuery, state.suppliers]);
+  }, [typeOptions, filterClassId, filterTypeId, filterProductId, typeQuery, state.suppliers, state.products]);
 
   const typeTotalPages = Math.max(1, Math.ceil(filteredTypes.length / TYPE_PER_PAGE));
   useEffect(() => { if (typePage > typeTotalPages) setTypePage(typeTotalPages); }, [typeTotalPages]);
@@ -509,9 +516,10 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
     const chips = [];
     if (filterClassId) chips.push(`Клас: ${classOptions.find(c=>c.id===filterClassId)?.name || filterClassId}`);
     if (filterTypeId) chips.push(`Вид: ${typeOptions.find(t=>t.id===filterTypeId)?.name || filterTypeId}`);
+    if (filterProductId) chips.push(`Продукт: ${(state.products||[]).find(p=>p.id===filterProductId)?.name || filterProductId}`);
     if (typeQuery.trim()) chips.push(`Пошук: "${typeQuery.trim()}"`);
     return chips;
-  }, [filterClassId, filterTypeId, typeQuery, classOptions, typeOptions]);
+  }, [filterClassId, filterTypeId, filterProductId, typeQuery, classOptions, typeOptions, state.products]);
 
   const classCols = [
     { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
@@ -833,6 +841,13 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
                   <option value="">Всі</option>
                   {classOptions.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
                 </Select>
+                <div className="mt-2">
+                  <div className="text-xs text-gray-500 mb-1">Продукт</div>
+                  <Select value={filterProductId} onChange={setFilterProductId}>
+                    <option value="">Всі</option>
+                    {(state.products||[]).map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                  </Select>
+                </div>
               </div>
               <div>
                 <div className="text-xs text-gray-500 mb-1">Вид</div>
@@ -854,7 +869,7 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
             <div>
               <button
                 className="rounded-xl border px-4 py-2 hover:bg-gray-50"
-                onClick={() => { setFilterClassId(""); setFilterTypeId(""); setTypeQuery(""); }}
+                onClick={() => { setFilterClassId(""); setFilterTypeId(""); setFilterProductId(""); setTypeQuery(""); }}
               >Скинути</button>
             </div>
           </div>
@@ -1857,9 +1872,29 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     { key: "status", header: "Статус", thClass: "w-48", cell: (r) => (
       <div className="flex gap-2 items-center">
         {!r.isService && (
-          r.delivered
-            ? <button className="px-2 py-0.5 rounded-full text-xs bg-green-50 border border-green-200 text-green-700 whitespace-nowrap" onClick={()=> setDeliveryFilter('delivered')}>Доставлено</button>
-            : <button className="px-2 py-0.5 rounded-full text-xs bg-rose-100 border border-rose-300 text-rose-700 whitespace-nowrap" onClick={()=> setDeliveryFilter('not_delivered')}>В дорозі</button>
+          <div className="relative inline-block">
+            <select
+              className={`appearance-none border rounded-xl pl-2 pr-7 py-0.5 text-xs ${r.delivered ? 'bg-green-50 border-green-200 text-green-700' : 'bg-rose-100 border-rose-300 text-rose-700'}`}
+              value={r.delivered ? 'delivered' : 'transit'}
+              onChange={async (e) => {
+                const v = e.target.value;
+                try {
+                  if (v === 'delivered' && !r.delivered) {
+                    await api.markDelivered(r.id);
+                  } else if (v === 'transit' && r.delivered) {
+                    // скасування доставки через update (delivered:false)
+                    await api.updatePurchase(r.id, { delivered: false });
+                  }
+                  const s = await api.getState();
+                  applyPartialState({ purchases: s.purchases, inventory: s.inventory, productStock: s.productStock });
+                } catch (err) { alert(String(err)); }
+              }}
+            >
+              <option value="transit">В дорозі</option>
+              <option value="delivered">Доставлено</option>
+            </select>
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+          </div>
         )}
         {r.isService && (
           <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 border border-purple-300 text-purple-800">Послуги</span>
@@ -1869,13 +1904,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     { key: "actions", header: "Дії", thClass: "w-64", cell: (r) => (
       <div className="flex flex-col gap-2">
         <div className="flex gap-2">
-          {!r.isService && (
-            <button
-              className={`px-3 py-1 rounded-xl border text-sm ${r.delivered ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
-              onClick={() => !r.delivered && dispatch({ type: "MARK_PURCHASE_DELIVERED", purchaseId: r.id })}
-              disabled={r.delivered}
-            >Позначити доставлено</button>
-          )}
+          {/* кнопка доставки прибрана, керування через селект Статус */}
 
         </div>
         {editingId === r.id && (
@@ -2463,9 +2492,20 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   );
 }
 
-function InventoryView({ state, dispatch }) {
+function InventoryView({ state, dispatch, applyPartialState }) {
   const partById = (id) => state.partTypes.find((p) => p.id === id);
-  const rows = Object.entries(state.inventory).map(([partTypeId, data]) => ({ id: partTypeId, partTypeId, ...data }));
+  const classById = (id) => state.partClasses.find((c) => c.id === id);
+  // Build rows for ALL part types, even if qty = 0 (no inventory yet)
+  const rows = (state.partTypes || []).map((pt) => {
+    const inv = (state.inventory || {})[pt.id] || {};
+    return {
+      id: pt.id,
+      partTypeId: pt.id,
+      classId: pt.classId,
+      qty: Number(inv.qty || 0),
+      avgCost: Number(inv.avgCost || 0),
+    };
+  });
 
   // Small icon registry for classes
   const ICONS = {
@@ -2477,40 +2517,65 @@ function InventoryView({ state, dispatch }) {
   }
 
   const cols = [
-    { key: "name", header: "Деталь", cell: (r) => {
+    { key: "class", header: "Клас", cell: (r) => {
       const part = partById(r.partTypeId);
-          const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
+      const cls = part ? classById(part.classId) : null;
+      const style = makeClassChipStyle(cls?.color);
       return (
-        <div>
-          <div className="font-medium">
-            <span className="text-gray-500 inline-flex items-center gap-1">[{renderClassIcon(partClass?.icon)} {partClass?.name || "?"}]</span> {part?.name || "?"}
-          </div>
-          <div className="text-xs text-gray-500">Одиниця: {part?.unit || 'pcs'}</div>
-        </div>
+        <span className="px-2 py-0.5 rounded-full text-xs border inline-flex items-center gap-1" style={style}>
+          {renderClassIcon(cls?.icon)} {cls?.name || part?.classId || '—'}
+        </span>
       );
     } },
+    { key: "part", header: "Вид деталі", cell: (r) => (partById(r.partTypeId)?.name || "?") },
     { key: "qty", header: "Кількість" },
     { key: "avgCost", header: "Сер. собівартість", cell: (r) => currency(r.avgCost) },
     { key: "total", header: "Сума", cell: (r) => currency(r.avgCost * r.qty) },
-    { key: "runningLow", header: "Статус", cell: (r) => {
+    { key: "status", header: "Статус", cell: (r) => {
       const part = partById(r.partTypeId);
-      if (!part || part.unit === 'pcs') return '—';
-      return part.runningLow ? <span className="px-2 py-0.5 rounded-full text-xs border bg-yellow-50 border-yellow-300 text-yellow-800">Закінчується</span> : '—';
-    } },
-    { key: "actions", header: "—", thClass: "w-32", cell: (r) => {
-      const part = partById(r.partTypeId);
-      if (!part || part.unit === 'pcs') return '—';
+      if (!part) return '—';
+      // If qty is zero — show explicit "Немає"
+      if (Number(r.qty) <= 0) {
+        return <span className="px-2 py-0.5 rounded-full text-xs border bg-rose-100 border-rose-300 text-rose-700">Немає</span>;
+      }
+      if (part.unit === 'pcs') {
+        const threshold = part.runningLowThreshold ?? 10;
+        const low = Number(r.qty) <= Number(threshold);
+        return low ? (
+          <span className="px-2 py-0.5 rounded-full text-xs border bg-yellow-50 border-yellow-300 text-yellow-800">Закінчується</span>
+        ) : (
+          <span className="px-2 py-0.5 rounded-full text-xs bg-green-50 border border-green-200 text-green-700">Достатньо</span>
+        );
+      }
+      const value = (part.stockStatus === 'none') ? 'none' : (part.runningLow ? 'low' : 'ok');
+      const clsByValue = (v) => v==='none' ? 'bg-rose-100 border-rose-300 text-rose-700' : v==='low' ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-green-50 border-green-200 text-green-700';
       return (
-        <button
-          className={`px-3 py-1 rounded-xl border text-sm ${part.runningLow ? 'bg-red-100 text-red-700 border-red-300' : 'bg-gray-100 text-gray-700 border-gray-300'}`}
-          onClick={async () => {
-            try {
-              await dispatch({ type: 'UPDATE_PART_TYPE', id: part.id, runningLow: !part.runningLow });
-            } catch(e) { alert(String(e)); }
-          }}
-        >
-          {part.runningLow ? 'Скасувати' : 'Позначити Завершується'}
-        </button>
+        <div className="relative inline-block">
+          <select
+            className={`appearance-none border rounded-xl pl-2 pr-7 py-0.5 text-xs ${clsByValue(value)}`}
+            value={value}
+            onChange={async (e) => {
+              const v = e.target.value;
+              const nextRunningLow = v === 'low';
+              // оптимістичне локальне оновлення без перезавантаження
+              applyPartialState({
+                partTypes: (state.partTypes || []).map(t => t.id === part.id ? { ...t, runningLow: nextRunningLow, stockStatus: v } : t)
+              });
+              try {
+                await api.updatePartType(part.id, { runningLow: nextRunningLow, stockStatus: v });
+              } catch (err) {
+                // відкочуємося до серверного стану у випадку помилки
+                try { const s = await api.getState(); applyPartialState({ partTypes: s.partTypes }); } catch(_) {}
+                alert(String(err));
+              }
+            }}
+          >
+            <option value="ok">Достатньо</option>
+            <option value="low">Закінчується</option>
+            <option value="none">Немає</option>
+          </select>
+          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+        </div>
       );
     } },
   ];

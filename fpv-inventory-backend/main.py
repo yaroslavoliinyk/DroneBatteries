@@ -215,6 +215,7 @@ class PartType(BaseModel):
     unit: Optional[str] = "pcs"
     supplierId: Optional[str] = None
     note: Optional[str] = ""
+    stockStatus: Optional[str] = None  # ok | low | none (manual status for non-pcs)
     # deprecated fields (kept for backward compatibility on input)
     manufacturer: Optional[str] = None
     sku: Optional[str] = None
@@ -417,6 +418,7 @@ class UpdatePartTypeRequest(BaseModel):
     sku: Optional[str] = None
     runningLow: Optional[bool] = None
     runningLowThreshold: Optional[float] = None
+    stockStatus: Optional[str] = None  # ok | low | none (for non-pcs manual status)
 
 
 @app.put("/parts/types/{type_id}")
@@ -439,9 +441,15 @@ async def update_part_type(type_id: str, body: UpdatePartTypeRequest):
             if not sup:
                 raise HTTPException(400, "Вказаний supplierId не існує")
     # Strip deprecated fields if present (keep runningLowThreshold for threshold persistence)
-    for k in ("manufacturer", "sku", "runningLow"):
+    for k in ("manufacturer", "sku"):
         if k in patch:
             patch.pop(k, None)
+    # normalize runningLow if provided
+    if "runningLow" in body.model_dump(exclude_unset=True):
+        patch["runningLow"] = bool(body.runningLow)
+    # validate stockStatus if provided
+    if "stockStatus" in patch and patch["stockStatus"] not in ("ok", "low", "none"):
+        raise HTTPException(400, "stockStatus must be one of: ok, low, none")
     if not patch:
         return {"ok": True}
     await c_part_types.update_one({"_id": type_id}, {"$set": patch})
