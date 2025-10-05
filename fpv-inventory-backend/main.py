@@ -840,11 +840,25 @@ async def list_products():
 
 @app.post("/products")
 async def add_product(p: Product):
-    doc = ensure_id(p.model_dump())
-    # ensure bom item ids
-    for it in doc["bom"]:
-        if not it.get("id"):
-            it["id"] = str(ObjectId())
+    payload = p.model_dump()
+    # normalize BOM: add ids, infer classId, drop invalid/empty
+    norm_bom = []
+    for it in payload.get("bom", []) or []:
+        d = dict(it)
+        if not d.get("id"):
+            d["id"] = str(ObjectId())
+        pt_id = d.get("partTypeId")
+        qty = float(d.get("qty", 0))
+        if not pt_id or qty <= 0:
+            continue
+        pt = await c_part_types.find_one({"_id": pt_id})
+        if not pt:
+            continue
+        d["classId"] = pt.get("classId")
+        d["qty"] = qty
+        norm_bom.append({"id": d["id"], "partTypeId": pt_id, "classId": d.get("classId"), "qty": qty})
+    payload["bom"] = norm_bom
+    doc = ensure_id(payload)
     await c_products.insert_one(doc)
     doc.pop("_id", None)
     # initialize stock doc if missing
@@ -872,7 +886,15 @@ async def update_product(product_id: str, body: UpdateProductRequest):
             d = it.model_dump() if isinstance(it, ProductBOMItem) else dict(it)
             if not d.get("id"):
                 d["id"] = str(ObjectId())
-            norm.append({"id": d["id"], "partTypeId": d["partTypeId"], "qty": float(d.get("qty", 0))})
+            pt_id = d.get("partTypeId")
+            qty = float(d.get("qty", 0))
+            if not pt_id or qty <= 0:
+                continue
+            pt = await c_part_types.find_one({"_id": pt_id})
+            if not pt:
+                continue
+            cls_id = d.get("classId") or pt.get("classId")
+            norm.append({"id": d["id"], "partTypeId": pt_id, "classId": cls_id, "qty": qty})
         patch["bom"] = norm
     if not patch:
         return {"ok": True}

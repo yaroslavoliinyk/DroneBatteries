@@ -2540,6 +2540,15 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
   const [note, setNote] = useState("");
   const [suggestedPrice, setSuggestedPrice] = useState("");
   const [rows, setRows] = useState([]);
+  const [showAddProduct, setShowAddProduct] = useState(false);
+  // Icon helpers for class chips within Products view
+  const ICONS = {
+    Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
+  };
+  function renderClassIcon(name) {
+    const IconComp = (name && ICONS[name]) || Package;
+    return <IconComp className="w-4 h-4 mx-auto my-auto" />;
+  }
 
   function addRow() {
     const defaultClass = state.partClasses[0]?.id || "";
@@ -2576,15 +2585,19 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     setEditProdName(p.name || "");
     setEditProdNote(p.note || "");
     setEditProdSuggested(p.suggestedPrice ?? "");
-    setEditBom(p.bom.map(b => ({ id: b.id, partTypeId: b.partTypeId, qty: Number(b.qty||0) })));
+    setEditBom(p.bom.map(b => {
+      const pt = partById(b.partTypeId);
+      return { id: b.id, classId: b.classId || pt?.classId || "", partTypeId: b.partTypeId, qty: Number(b.qty||0) };
+    }));
   }
   function cancelEditProduct() {
     setEditingProductId(null);
     setEditProdName(""); setEditProdNote(""); setEditProdSuggested(""); setEditBom([]);
   }
   function addBomRow() {
-    const defaultPart = state.partTypes[0]?.id || "";
-    setEditBom(x => [...x, { id: Math.random().toString(36).slice(2), partTypeId: defaultPart, qty: 0 }]);
+    const defaultClass = state.partClasses[0]?.id || "";
+    const defaultPart = state.partTypes.find(t=>t.classId===defaultClass)?.id || state.partTypes[0]?.id || "";
+    setEditBom(x => [...x, { id: Math.random().toString(36).slice(2), classId: defaultClass, partTypeId: defaultPart, qty: 0 }]);
   }
   function updateBomRow(id, patch) {
     setEditBom(x => x.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -2593,9 +2606,9 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
 
   async function saveProductEdit(id) {
     try {
-      await api.updateProduct(id, { name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? undefined : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) });
+      await api.updateProduct(id, { name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? undefined : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) });
       // optimistic
-      applyPartialState({ products: (state.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) } : p) });
+      applyPartialState({ products: (state.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) } : p) });
       cancelEditProduct();
     } catch (e) { alert(String(e)); }
   }
@@ -2607,15 +2620,31 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
         <div className="text-sm text-gray-700 space-y-2">
           <div className="overflow-x-auto border rounded-xl">
             <table className="min-w-full text-xs">
-              <thead className="bg-gray-50"><tr><th className="p-2 text-left">Деталь</th><th className="p-2 text-left">К-сть</th><th className="p-2 text-left">Сер. собівартість</th><th className="p-2 text-left">Внесок</th><th className="p-2 text-left">—</th></tr></thead>
+              <thead className="bg-gray-50"><tr><th className="p-2 text-left">Клас</th><th className="p-2 text-left">Деталь</th><th className="p-2 text-left">К-сть</th><th className="p-2 text-left">Сер. собівартість</th><th className="p-2 text-left">Внесок</th><th className="p-2 text-left">—</th></tr></thead>
               <tbody>
                 {editBom.map(r => {
                   const avg = state.inventory[r.partTypeId]?.avgCost || 0;
                   return (
                     <tr key={r.id} className="odd:bg-white even:bg-gray-50">
                       <td className="p-2">
-                        <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.partTypeId} onChange={(e)=> updateBomRow(r.id, { partTypeId: e.target.value })}>
-                          {state.partTypes.map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
+                        <div className="relative">
+                          <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.classId || ''} onChange={(e)=>{
+                            const nextClass = e.target.value;
+                            const firstType = state.partTypes.find(t=>t.classId===nextClass)?.id || '';
+                            updateBomRow(r.id, { classId: nextClass, partTypeId: firstType });
+                          }}>
+                            {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                          </select>
+                          {(() => { const cls = state.partClasses.find(c=>c.id===r.classId); return cls ? (<div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">{renderClassIcon(cls.icon)}</div>) : null; })()}
+                        </div>
+                      </td>
+                      <td className="p-2">
+                        <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.partTypeId} onChange={(e)=> {
+                          const nextTypeId = e.target.value;
+                          const t = state.partTypes.find(pt => pt.id === nextTypeId);
+                          updateBomRow(r.id, { partTypeId: nextTypeId, classId: t?.classId || r.classId });
+                        }}>
+                          {state.partTypes.filter(pt=> !r.classId || pt.classId===r.classId).map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
                         </select>
                       </td>
                       <td className="p-2"><NumberInput className="w-24" value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} /></td>
@@ -2636,14 +2665,29 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
       ) : (
         <div className="text-sm text-gray-700 space-y-1">
           {p.bom.map((b) => {
+            const part = partById(b.partTypeId);
+            const cls = part ? state.partClasses.find((c) => c.id === part.classId) : null;
             const avg = state.inventory[b.partTypeId]?.avgCost || 0;
-            return (<div key={b.id}>• {partById(b.partTypeId)?.name || "?"}: {b.qty} × {currency(avg)} = <b>{currency(avg * b.qty)}</b></div>);
+            return (
+              <div key={b.id} className="flex items-center gap-1">
+                {cls && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] border inline-flex items-center gap-1" style={makeClassChipStyle(cls?.color)}>
+                    {renderClassIcon(cls?.icon)} {cls?.name || part?.classId || '—'}
+                  </span>
+                )}
+                <span>• {part?.name || "?"}: {b.qty} × {currency(avg)} = <b>{currency(avg * b.qty)}</b></span>
+              </div>
+            );
           })}
         </div>
       )
     ) },
     { key: "cost", header: "Орієнт. собівартість", cell: (p) => currency(p.bom.reduce((s, b) => s + (state.inventory[b.partTypeId]?.avgCost || 0) * b.qty, 0)) },
-    { key: "stock", header: "На складі", cell: (p) => state.productStock[p.id] || 0 },
+    { key: "suggestedPrice", header: "Рекомендована ціна", cell: (p) => (
+      editingProductId === p.id
+        ? (<NumberInput className="w-28" value={editProdSuggested} onChange={setEditProdSuggested} min={0} />)
+        : (p.suggestedPrice != null ? currency(p.suggestedPrice) : "—")
+    ) },
     { key: "actions", header: "—", thClass: "w-40", cell: (p) => (
       editingProductId === p.id ? (
         <div className="flex items-center gap-2">
@@ -2664,8 +2708,17 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
 
   return (
     <div className="space-y-6">
-      <Section title="Новий продукт" icon={Boxes}>
-        {state.partTypes.length === 0 ? (
+      <Section title="Новий продукт" icon={Boxes} right={(
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center gap-2"
+            onClick={() => setShowAddProduct(v => !v)}
+          >
+            <Plus className="w-4 h-4" /> {showAddProduct ? 'Сховати' : 'Додати продукт'}
+          </button>
+        </div>
+      )}>
+        {!showAddProduct ? null : state.partTypes.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку додайте <b>Види деталей</b>.</div>
         ) : (
           <div className="grid gap-3">
@@ -2695,19 +2748,22 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                     return (
                       <tr key={r.id} className="odd:bg-white even:bg-gray-50">
                       <td className="p-2">
-                        <select
-                          className="w-full border rounded-xl px-2 py-1 bg-white"
-                          value={r.classId || ""}
-                          onChange={(e) => {
-                            const nextClassId = e.target.value;
-                            const firstTypeInClass = state.partTypes.find(t => t.classId === nextClassId)?.id || "";
-                            updateRow(r.id, { classId: nextClassId, partTypeId: firstTypeInClass });
-                          }}
-                        >
-                          {state.partClasses.map((c) => (
-                            <option key={c.id} value={c.id}>{c.name}</option>
-                          ))}
-                        </select>
+                        <div className="relative">
+                          <select
+                            className="w-full border rounded-xl px-2 py-1 bg-white"
+                            value={r.classId || ""}
+                            onChange={(e) => {
+                              const nextClassId = e.target.value;
+                              const firstTypeInClass = state.partTypes.find(t => t.classId === nextClassId)?.id || "";
+                              updateRow(r.id, { classId: nextClassId, partTypeId: firstTypeInClass });
+                            }}
+                          >
+                            {state.partClasses.map((c) => (
+                              <option key={c.id} value={c.id}>{c.name}</option>
+                            ))}
+                          </select>
+                          {(() => { const cls = state.partClasses.find(c=>c.id===r.classId); return cls ? (<div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">{renderClassIcon(cls.icon)}</div>) : null; })()}
+                        </div>
                       </td>
                       <td className="p-2">
                         <select
