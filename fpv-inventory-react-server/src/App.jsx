@@ -116,12 +116,6 @@ export default function App() {
         await api.addPurchase({ vendor: action.vendor || "", date: action.date || todayISO(), items, total, isService: !!action.isService });
       } else if (action.type === "MARK_PURCHASE_DELIVERED") {
         await api.markDelivered(action.purchaseId);
-      } else if (action.type === "PAY_PURCHASE_FROM_BALANCE") {
-        await api.payFromBalance(action.purchaseId);
-        try {
-          const s = await api.getState();
-          applyPartialState({ purchases: s.purchases, balanceEntries: s.balanceEntries });
-        } catch(_) {}
       } else if (action.type === "ADD_ADDITIONAL_COST") {
         const res = await api.addAdditionalCost(action.purchaseId, {
           amount: Number(action.amount),
@@ -147,40 +141,13 @@ export default function App() {
         } catch (_) { /* no-op */ }
         return;
       } else if (action.type === "ADD_BALANCE_ENTRY") {
-        const entry = {
-          date: action.date || todayISO(),
-          type: action.entryType, // deposit | withdrawal
-          amount: Number(action.amount || 0),
-          note: action.note || "",
-          tag: action.tag,
-        };
-        await api.addBalanceEntry(entry);
+        alert("Редагування, додавання та видалення транзакцій балансу заборонено.");
+        return;
       } else if (action.type === "UPDATE_BALANCE_ENTRY") {
-        await api.updateBalanceEntry(action.id, {
-          date: action.date,
-          type: action.entryType,
-          amount: action.amount != null ? Number(action.amount) : undefined,
-          note: action.note,
-          tag: action.tag,
-        });
-        // Optimistic local update
-        applyPartialState({ balanceEntries: (state?.balanceEntries||[]).map(e => e.id === action.id ? {
-          ...e,
-          date: action.date ?? e.date,
-          type: action.entryType ?? e.type,
-          amount: action.amount != null ? Number(action.amount) : e.amount,
-          note: action.note ?? e.note,
-          tag: action.tag ?? e.tag,
-        } : e) });
-        // background refresh for balance-dependent UI
-        try { const s = await api.getState(); applyPartialState({ balanceEntries: s.balanceEntries }); } catch(_){}
+        alert("Редагування, додавання та видалення транзакцій балансу заборонено.");
         return;
       } else if (action.type === "DELETE_BALANCE_ENTRY") {
-        await api.deleteBalanceEntry(action.id);
-        // Optimistic local removal
-        applyPartialState({ balanceEntries: (state?.balanceEntries||[]).filter(e => e.id !== action.id) });
-        // background refresh (state + purchases/inventory may change due to linked additionalCosts deletion)
-        try { const s = await api.getState(); applyPartialState({ ...s }); } catch(_){}
+        alert("Редагування, додавання та видалення транзакцій балансу заборонено.");
         return;
       } else if (action.type === "ADD_PRODUCT") {
         await api.addProduct({
@@ -287,7 +254,7 @@ export default function App() {
         {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} focusSupplierId={focusSupplierId} clearFocus={()=> setFocusSupplierId(null)} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} />}
-        {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
+        {tab === "products" && <ProductsView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "assembly" && <AssemblyView state={state} dispatch={dispatch} />}
         {tab === "sales" && <SalesView state={state} dispatch={dispatch} />}
         {tab === "settings" && <SettingsView state={state} dispatch={dispatch} serverMode/>}
@@ -391,58 +358,18 @@ function BalanceView({ state, dispatch, balance }) {
   const cols = [
     { key: "date", header: "Дата" },
     { key: "type", header: "Тип", cell: (r) => (
-      editingId === r.id ? (
-        <Select value={editType} onChange={setEditType}>
-          <option value="deposit">Вклад</option>
-          <option value="withdrawal">Виведення</option>
-          <option value="purchase">Покупка</option>
-          <option value="sale">Продаж</option>
-        </Select>
-      ) : (
-        <div className="flex items-center gap-2"><Tag>{r.tag || r.type}</Tag></div>
-      )
+      <div className="flex items-center gap-2"><Tag>{r.tag || r.type}</Tag></div>
     ) },
     { key: "amount", header: "Сума", cell: (r) => (
-      editingId === r.id ? (
-        <NumberInput value={editAmount} onChange={setEditAmount} />
-      ) : (
-        <span className={r.type === 'withdrawal' || r.type === 'purchase' ? 'text-red-600' : 'text-green-600'}>
-          {r.type === 'withdrawal' || r.type === 'purchase' ? '-' : '+'}{currency(r.amount)}
-        </span>
-      )
+      <span className={r.type === 'withdrawal' || r.type === 'purchase' ? 'text-red-600' : 'text-green-600'}>
+        {r.type === 'withdrawal' || r.type === 'purchase' ? '-' : '+'}{currency(r.amount)}
+      </span>
     ) },
     { key: "note", header: "Нотатка", cell: (r) => (
-      editingId === r.id ? (
-        <TextInput value={editNote} onChange={setEditNote} />
-      ) : (
-        r.note || ''
-      )
+      r.note || ''
     ) },
     { key: "actions", header: "—", thClass: "w-28", cell: (r) => (
-      editingId === r.id ? (
-        <div className="flex items-center gap-2">
-          <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={() => {
-            dispatch({ type: 'UPDATE_BALANCE_ENTRY', id: r.id, date: editDate, entryType: editType, amount: Number(editAmount), note: editNote, tag: editTag });
-            setEditingId(null);
-          }}>Зберегти</button>
-          <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={() => setEditingId(null)}>Скасувати</button>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2">
-          <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={() => {
-            setEditingId(r.id);
-            setEditDate(r.date || todayISO());
-            setEditType(r.type);
-            setEditAmount(Number(r.amount || 0));
-            setEditNote(r.note || '');
-            setEditTag(r.tag || '');
-          }}><Pencil className="w-4 h-4"/></button>
-          <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={() => {
-            if (!confirm('Видалити транзакцію?')) return;
-            dispatch({ type: 'DELETE_BALANCE_ENTRY', id: r.id });
-          }}><Trash2 className="w-4 h-4"/></button>
-        </div>
-      )
+      <div className="text-xs text-gray-400">—</div>
     ) },
   ];
 
@@ -1528,7 +1455,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }
   // Filters & sorting
   const [deliveryFilter, setDeliveryFilter] = useState("all"); // all | delivered | not_delivered
-  const [paymentFilter, setPaymentFilter] = useState("all");   // all | paid | not_paid
+
   const [serviceFilter, setServiceFilter] = useState("all");   // all | services | goods
   const [classFilter, setClassFilter] = useState("");          // classId | ""
   const [typeFilter, setTypeFilter] = useState("");            // typeId | ""
@@ -1614,8 +1541,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       const deliveredForFilter = r.isService ? true : !!r.delivered;
       if (deliveryFilter === "delivered" && !deliveredForFilter) return false;
       if (deliveryFilter === "not_delivered" && deliveredForFilter) return false;
-      if (paymentFilter === "paid" && !r.paidFromBalance) return false;
-      if (paymentFilter === "not_paid" && r.paidFromBalance) return false;
+
       if (serviceFilter === "services" && !r.isService) return false;
       if (serviceFilter === "goods" && r.isService) return false;
       return true;
@@ -1670,14 +1596,13 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       return at === bt ? 0 : (at > bt ? 1 : -1) * dir;
     });
     return sorted;
-  }, [state.purchases, archivedPurchases, showArchived, deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
+  }, [state.purchases, archivedPurchases, showArchived, deliveryFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
 
   const activeFilters = useMemo(() => {
     const chips = [];
     if (deliveryFilter === "delivered") chips.push("Доставлені");
     if (deliveryFilter === "not_delivered") chips.push("В дорозі");
-    if (paymentFilter === "paid") chips.push("Оплачені");
-    if (paymentFilter === "not_paid") chips.push("Не оплачені");
+
     if (serviceFilter === "services") chips.push("Послуги");
     if (serviceFilter === "goods") chips.push("Товари");
     if (classFilter) {
@@ -1694,20 +1619,20 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     if (minTotal !== "") chips.push(`Сума ≥ ${Number(minTotal).toFixed(2)}`);
     if (maxTotal !== "") chips.push(`Сума ≤ ${Number(maxTotal).toFixed(2)}`);
     return chips;
-  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, state.partClasses, state.partTypes]);
+  }, [deliveryFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, state.partClasses, state.partTypes]);
   const activeFiltersCount = activeFilters.length;
 
   // Reset page to 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
+  }, [deliveryFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
 
   // URL sync (read on mount)
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const get = (k, def) => params.get(k) ?? def;
     setDeliveryFilter(get('df', 'all'));
-    setPaymentFilter(get('pf', 'all'));
+
     setServiceFilter(get('sf', 'all'));
     setClassFilter(get('cf', ''));
     setTypeFilter(get('tf', ''));
@@ -1719,7 +1644,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     setMinTotal(get('min', ''));
     setMaxTotal(get('max', ''));
     setPage(Number(get('p', '1')) || 1);
-    const any = ['df','pf','sf','cf','tf','from','to','sb','sd','vq','min','max'].some(k => params.get(k));
+    const any = ['df','sf','cf','tf','from','to','sb','sd','vq','min','max'].some(k => params.get(k));
     if (any) setShowFilters(true);
   }, []);
 
@@ -1730,7 +1655,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       if (v === undefined || v === null || v === '' || v === def) params.delete(k); else params.set(k, String(v));
     };
     setParam('df', deliveryFilter, 'all');
-    setParam('pf', paymentFilter, 'all');
+
     setParam('sf', serviceFilter, 'all');
     setParam('cf', classFilter, '');
     setParam('tf', typeFilter, '');
@@ -1745,7 +1670,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     const qs = params.toString();
     const url = qs ? `${location.pathname}?${qs}` : location.pathname;
     window.history.replaceState(null, '', url);
-  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, sortBy, sortDir, vendorQuery, minTotal, maxTotal, page]);
+  }, [deliveryFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, sortBy, sortDir, vendorQuery, minTotal, maxTotal, page]);
 
   // Clamp page if filtered result shrinks
   useEffect(() => {
@@ -1936,9 +1861,6 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             ? <button className="px-2 py-0.5 rounded-full text-xs bg-green-50 border border-green-200 text-green-700 whitespace-nowrap" onClick={()=> setDeliveryFilter('delivered')}>Доставлено</button>
             : <button className="px-2 py-0.5 rounded-full text-xs bg-rose-100 border border-rose-300 text-rose-700 whitespace-nowrap" onClick={()=> setDeliveryFilter('not_delivered')}>В дорозі</button>
         )}
-        {r.paidFromBalance
-          ? <button className="px-2 py-0.5 rounded-full text-xs bg-green-50 border border-green-200 text-green-700 whitespace-nowrap" onClick={()=> setPaymentFilter('paid')}>Оплачено</button>
-          : <button className="px-2 py-0.5 rounded-full text-xs bg-rose-100 border border-rose-300 text-rose-700 whitespace-nowrap" onClick={()=> setPaymentFilter('not_paid')}>Не оплачено</button>}
         {r.isService && (
           <span className="px-2 py-0.5 rounded-full text-xs bg-purple-100 border border-purple-300 text-purple-800">Послуги</span>
         )}
@@ -1954,11 +1876,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               disabled={r.delivered}
             >Позначити доставлено</button>
           )}
-          <button
-            className={`px-3 py-1 rounded-xl border text-sm ${r.paidFromBalance ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-50'}`}
-            onClick={() => !r.paidFromBalance && dispatch({ type: "PAY_PURCHASE_FROM_BALANCE", purchaseId: r.id })}
-            disabled={r.paidFromBalance}
-          >Оплатити з балансу</button>
+
         </div>
         {editingId === r.id && (
           <label className="flex items-center gap-2 text-xs text-gray-700">
@@ -2617,7 +2535,7 @@ function InventoryView({ state, dispatch }) {
   );
 }
 
-function ProductsView({ state, dispatch }) {
+function ProductsView({ state, dispatch, refresh, applyPartialState }) {
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
   const [suggestedPrice, setSuggestedPrice] = useState("");
@@ -2647,15 +2565,101 @@ function ProductsView({ state, dispatch }) {
   const partById = (id) => state.partTypes.find((p) => p.id === id);
   const cost = rows.reduce((s, r) => s + (state.inventory[r.partTypeId]?.avgCost || 0) * Number(r.qty || 0), 0);
 
+  const [editingProductId, setEditingProductId] = useState(null);
+  const [editProdName, setEditProdName] = useState("");
+  const [editProdNote, setEditProdNote] = useState("");
+  const [editProdSuggested, setEditProdSuggested] = useState("");
+  const [editBom, setEditBom] = useState([]);
+
+  function startEditProduct(p) {
+    setEditingProductId(p.id);
+    setEditProdName(p.name || "");
+    setEditProdNote(p.note || "");
+    setEditProdSuggested(p.suggestedPrice ?? "");
+    setEditBom(p.bom.map(b => ({ id: b.id, partTypeId: b.partTypeId, qty: Number(b.qty||0) })));
+  }
+  function cancelEditProduct() {
+    setEditingProductId(null);
+    setEditProdName(""); setEditProdNote(""); setEditProdSuggested(""); setEditBom([]);
+  }
+  function addBomRow() {
+    const defaultPart = state.partTypes[0]?.id || "";
+    setEditBom(x => [...x, { id: Math.random().toString(36).slice(2), partTypeId: defaultPart, qty: 0 }]);
+  }
+  function updateBomRow(id, patch) {
+    setEditBom(x => x.map(r => r.id === id ? { ...r, ...patch } : r));
+  }
+  function removeBomRow(id) { setEditBom(x => x.filter(r => r.id !== id)); }
+
+  async function saveProductEdit(id) {
+    try {
+      await api.updateProduct(id, { name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? undefined : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) });
+      // optimistic
+      applyPartialState({ products: (state.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) } : p) });
+      cancelEditProduct();
+    } catch (e) { alert(String(e)); }
+  }
+
   const prodCols = [
-    { key: "name", header: "Назва" },
+    { key: "name", header: "Назва", cell: (p) => editingProductId === p.id ? (<TextInput value={editProdName} onChange={setEditProdName} placeholder="Назва" />) : p.name },
     { key: "bom", header: "Склад (BOM)", cell: (p) => (
-      <div className="text-sm text-gray-700 space-y-1">
-        {p.bom.map((b) => (<div key={b.id}>• {partById(b.partTypeId)?.name || "?"}: {b.qty}</div>))}
-      </div>
+      editingProductId === p.id ? (
+        <div className="text-sm text-gray-700 space-y-2">
+          <div className="overflow-x-auto border rounded-xl">
+            <table className="min-w-full text-xs">
+              <thead className="bg-gray-50"><tr><th className="p-2 text-left">Деталь</th><th className="p-2 text-left">К-сть</th><th className="p-2 text-left">Сер. собівартість</th><th className="p-2 text-left">Внесок</th><th className="p-2 text-left">—</th></tr></thead>
+              <tbody>
+                {editBom.map(r => {
+                  const avg = state.inventory[r.partTypeId]?.avgCost || 0;
+                  return (
+                    <tr key={r.id} className="odd:bg-white even:bg-gray-50">
+                      <td className="p-2">
+                        <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.partTypeId} onChange={(e)=> updateBomRow(r.id, { partTypeId: e.target.value })}>
+                          {state.partTypes.map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
+                        </select>
+                      </td>
+                      <td className="p-2"><NumberInput className="w-24" value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} /></td>
+                      <td className="p-2">{currency(avg)}</td>
+                      <td className="p-2 font-medium">{currency(avg * Number(r.qty||0))}</td>
+                      <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={()=> removeBomRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center justify-between">
+            <button className="rounded-xl border px-3 py-1 text-xs hover:bg-gray-50" onClick={addBomRow}><Plus className="w-4 h-4"/> Додати позицію</button>
+            <div className="text-xs">Орієнт.: <b>{currency(editBom.reduce((s,r)=> s + (state.inventory[r.partTypeId]?.avgCost || 0) * Number(r.qty||0), 0))}</b></div>
+          </div>
+        </div>
+      ) : (
+        <div className="text-sm text-gray-700 space-y-1">
+          {p.bom.map((b) => {
+            const avg = state.inventory[b.partTypeId]?.avgCost || 0;
+            return (<div key={b.id}>• {partById(b.partTypeId)?.name || "?"}: {b.qty} × {currency(avg)} = <b>{currency(avg * b.qty)}</b></div>);
+          })}
+        </div>
+      )
     ) },
     { key: "cost", header: "Орієнт. собівартість", cell: (p) => currency(p.bom.reduce((s, b) => s + (state.inventory[b.partTypeId]?.avgCost || 0) * b.qty, 0)) },
     { key: "stock", header: "На складі", cell: (p) => state.productStock[p.id] || 0 },
+    { key: "actions", header: "—", thClass: "w-40", cell: (p) => (
+      editingProductId === p.id ? (
+        <div className="flex items-center gap-2">
+          <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={()=> saveProductEdit(p.id)}>Зберегти</button>
+          <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={cancelEditProduct}>Скасувати</button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> startEditProduct(p)}><Pencil className="w-4 h-4"/></button>
+          <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
+            if (!confirm('Видалити продукт?')) return;
+            try { await api.deleteProduct(p.id); applyPartialState({ products: (state.products||[]).filter(x=>x.id!==p.id) }); } catch(e){ alert(String(e)); }
+          }}><Trash2 className="w-4 h-4"/></button>
+        </div>
+      )
+    ) },
   ];
 
   return (

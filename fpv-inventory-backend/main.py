@@ -317,72 +317,11 @@ class UpdateBalanceEntryRequest(BaseModel):
 
 @app.put("/balance/entries/{entry_id}")
 async def update_balance_entry(entry_id: str, body: UpdateBalanceEntryRequest):
-    b = await c_balance.find_one({"_id": entry_id})
-    if not b:
-        raise HTTPException(404, "Balance entry not found")
-    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
-    await c_balance.update_one({"_id": entry_id}, {"$set": patch})
-    # No special rebuild needed; balance is computed on the fly. Other forms use balance only for display.
-    return {"ok": True}
+    raise HTTPException(403, "Balance entries are immutable")
 
 @app.delete("/balance/entries/{entry_id}")
 async def delete_balance_entry(entry_id: str):
-    b = await c_balance.find_one({"_id": entry_id})
-    if not b:
-        raise HTTPException(404, "Balance entry not found")
-    # If this balance entry is linked to a purchase additional cost, remove it too
-    ref_pid = b.get("refPurchaseId")
-    removed_cost = None
-    if ref_pid:
-        p = await c_purchases.find_one({"_id": ref_pid})
-        if p:
-            # First, try to remove by direct refAdditionalCostId if present
-            costs = p.get("additionalCosts", []) or []
-            match_idx = -1
-            ref_cost_id = b.get("refAdditionalCostId")
-            if ref_cost_id:
-                for i, c in enumerate(costs):
-                    if c.get("id") == ref_cost_id:
-                        match_idx = i
-                        break
-            # Fallback: detect by amount and description parsed from note
-            if match_idx < 0:
-                note = b.get("note", "") or ""
-                amount = float(b.get("amount", 0))
-                desc = None
-                if "Додаткові витрати (" in note:
-                    try:
-                        start = note.index("Додаткові витрати (") + len("Додаткові витрати (")
-                        end = note.index(")", start)
-                        desc = note[start:end]
-                    except Exception:
-                        desc = None
-                for i, c in enumerate(costs):
-                    ca = float(c.get("amount", 0))
-                    if abs(ca - amount) < 1e-9:
-                        if desc is None or (c.get("description") or "") == desc:
-                            match_idx = i
-                            break
-            if match_idx >= 0:
-                removed_cost = costs.pop(match_idx)
-                # Recompute purchase total
-                items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in p.get("items", [])])
-                costs_total = sum([float(c.get("amount", 0)) for c in costs])
-                new_total = items_total + costs_total
-                await c_purchases.update_one({"_id": ref_pid}, {"$set": {"additionalCosts": costs, "total": new_total}})
-                # If purchase already delivered and is not a service, roll back allocation by subtracting value
-                if p.get("delivered") and not p.get("isService") and removed_cost:
-                    removed_amount = float(removed_cost.get("amount", 0))
-                    if removed_amount != 0:
-                        items_total_for_alloc = items_total  # base for share
-                        if items_total_for_alloc > 0:
-                            for it in p.get("items", []):
-                                base_value = float(it.get("qty", 0)) * float(it.get("unitCost", 0)) / items_total_for_alloc
-                                share_amount = (-removed_amount) * base_value
-                                await add_value_to_inventory(it["partTypeId"], share_amount)
-    # Finally delete the balance entry
-    await c_balance.delete_one({"_id": entry_id})
-    return {"ok": True}
+    raise HTTPException(403, "Balance entries cannot be deleted")
 
 @app.get("/balance/value")
 async def balance_value():
@@ -539,6 +478,8 @@ async def add_purchase(p: Purchase):
     total = sum([float(it.qty) * float(it.unitCost) for it in p.items])
     doc = ensure_id(p.model_dump())
     doc["total"] = total
+    # Auto mark as paid from balance
+    doc["paidFromBalance"] = True
     # ensure items have ids
     for it in doc["items"]:
         if not it.get("id"):
@@ -547,6 +488,37 @@ async def add_purchase(p: Purchase):
     if "additionalCosts" not in doc or doc["additionalCosts"] is None:
         doc["additionalCosts"] = []
     await c_purchases.insert_one(doc)
+    # Automatically create balance entry for the purchase
+    try:
+        is_service = doc.get("isService", False) or any(item.get("isService", False) for item in doc.get("items", []))
+        def fmt_item(it):
+            name = "послуга" if (it.get("isService") or it.get("partTypeId") in (None, "")) else "позиція"
+            qty = float(it.get("qty", 0))
+            unit_cost = float(it.get("unitCost", 0))
+            line_total = qty * unit_cost if not (it.get("isService") or qty == 0) else unit_cost
+            note = it.get("note")
+            base = f"{name}: {qty:.0f} × {unit_cost:.2f} = {line_total:.2f}"
+            return f"{base}{f' ({note})' if note else ''}"
+        details = ", ".join([fmt_item(it) for it in doc.get("items", [])])
+        base_note = (f"Оплата сервісу" if is_service else "Оплата закупки")
+        vendor_text = doc.get('vendor') or '(без постачальника)'
+        full_note = f"{base_note} {vendor_text} — {details}" if details else f"{base_note} {vendor_text}"
+
+        entry = {
+            "id": str(ObjectId()),
+            "_id": None,
+            "date": doc.get("date") or now_iso(),
+            "type": "purchase",
+            "amount": float(doc.get("total", 0)),
+            "note": full_note,
+            "tag": "Покупка",
+            "refPurchaseId": doc["id"],
+        }
+        entry["_id"] = entry["id"]
+        await c_balance.insert_one(entry)
+    except Exception:
+        # best-effort; do not block purchase creation
+        pass
     doc.pop("_id", None)
     return doc
 
@@ -594,8 +566,8 @@ async def update_purchase(purchase_id: str, body: UpdatePurchaseRequest):
     # Ensure consistency by rebuilding inventory/stock if impactful fields changed
     if any(k in patch for k in ("items", "additionalCosts", "delivered", "isService")):
         await rebuild_inventory_and_stock()
-    # Balance note: if paidFromBalance already true and total changed, we should adjust balance difference
-    if p.get("paidFromBalance") and "total" in patch:
+    # Always adjust balance difference when total changes
+    if "total" in patch:
         diff = float(patch["total"]) - float(p.get("total", 0))
         if abs(diff) > 1e-9:
             be = {
@@ -604,7 +576,7 @@ async def update_purchase(purchase_id: str, body: UpdatePurchaseRequest):
                 "date": patch.get("date") or p.get("date") or now_iso(),
                 "type": "purchase",
                 "amount": diff,
-                "note": f"Корекція оплати закупки {p.get('vendor') or ''}",
+                "note": f"Корекція оплати закупки {patch.get('vendor') if isinstance(patch.get('vendor'), str) else (p.get('vendor') or '')}",
                 "tag": "Покупка",
                 "refPurchaseId": purchase_id,
             }
@@ -768,21 +740,20 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
         {"$set": {"additionalCosts": additional_costs, "total": new_total}}
     )
 
-    # If purchase was already paid from balance, add additional cost to balance
-    if p.get("paidFromBalance"):
-        balance_entry = {
-            "id": str(ObjectId()),
-            "_id": None,
-            "date": cost["date"],
-            "type": "purchase",
-            "amount": float(req.amount),
-            "note": f"Додаткові витрати ({req.description}) для закупки {p.get('vendor') or '(без постачальника)'}",
-            "tag": "Покупка",
-            "refPurchaseId": purchase_id,
-            "refAdditionalCostId": cost["id"],
-        }
-        balance_entry["_id"] = balance_entry["id"]
-        await c_balance.insert_one(balance_entry)
+    # Always add additional cost to balance
+    balance_entry = {
+        "id": str(ObjectId()),
+        "_id": None,
+        "date": cost["date"],
+        "type": "purchase",
+        "amount": float(req.amount),
+        "note": f"Додаткові витрати ({req.description}) для закупки {p.get('vendor') or '(без постачальника)'}",
+        "tag": "Покупка",
+        "refPurchaseId": purchase_id,
+        "refAdditionalCostId": cost["id"],
+    }
+    balance_entry["_id"] = balance_entry["id"]
+    await c_balance.insert_one(balance_entry)
 
     # If purchase has already been delivered, distribute this additional
     # cost across inventory as pure value (no qty change)
@@ -881,6 +852,48 @@ async def add_product(p: Product):
         {"_id": doc["id"]}, {"$setOnInsert": {"id": doc["id"], "qty": 0}}, upsert=True
     )
     return doc
+
+class UpdateProductRequest(BaseModel):
+    name: Optional[str] = None
+    note: Optional[str] = None
+    suggestedPrice: Optional[float] = None
+    bom: Optional[List[ProductBOMItem]] = None
+
+@app.put("/products/{product_id}")
+async def update_product(product_id: str, body: UpdateProductRequest):
+    prod = await c_products.find_one({"_id": product_id})
+    if not prod:
+        raise HTTPException(404, "Product not found")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if "bom" in patch:
+        arr = patch["bom"] or []
+        norm = []
+        for it in arr:
+            d = it.model_dump() if isinstance(it, ProductBOMItem) else dict(it)
+            if not d.get("id"):
+                d["id"] = str(ObjectId())
+            norm.append({"id": d["id"], "partTypeId": d["partTypeId"], "qty": float(d.get("qty", 0))})
+        patch["bom"] = norm
+    if not patch:
+        return {"ok": True}
+    await c_products.update_one({"_id": product_id}, {"$set": patch})
+    return {"ok": True}
+
+@app.delete("/products/{product_id}")
+async def delete_product(product_id: str):
+    prod = await c_products.find_one({"_id": product_id})
+    if not prod:
+        raise HTTPException(404, "Product not found")
+    # Block deletion if referenced in assemblies or sales
+    used_in_asm = await c_assemblies.find_one({"productId": product_id})
+    if used_in_asm:
+        raise HTTPException(400, "Неможливо видалити: продукт використовується у збірках")
+    used_in_sale = await c_sales.find_one({"productId": product_id})
+    if used_in_sale:
+        raise HTTPException(400, "Неможливо видалити: продукт використовується у продажах")
+    await c_products.delete_one({"_id": product_id})
+    await c_product_stock.delete_one({"_id": product_id})
+    return {"ok": True}
 # Suppliers
 @app.get("/suppliers")
 async def list_suppliers():
