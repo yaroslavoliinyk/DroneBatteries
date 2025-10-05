@@ -6,6 +6,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from db import (
+    db,
+    c_balance,
+    c_part_classes,
+    c_part_types,
+    c_purchases,
+    c_inventory,
+    c_products,
+    c_assemblies,
+    c_product_stock,
+    c_sales,
+    c_suppliers,
+)
 from bson import ObjectId
 
 load_dotenv()
@@ -25,19 +38,6 @@ app.add_middleware(
 )
 
 client = AsyncIOMotorClient(MONGODB_URI)
-db = client[DB_NAME]
-
-# Collections
-c_balance = db["balance_entries"]
-c_part_classes = db["part_classes"]
-c_part_types = db["part_types"]
-c_purchases = db["purchases"]
-c_inventory = db["inventory"]
-c_products = db["products"]
-c_assemblies = db["assemblies"]
-c_product_stock = db["product_stock"]
-c_sales = db["sales"]
-c_suppliers = db["suppliers"]
 
 # --------- Helpers ---------
 def now_iso() -> str:
@@ -126,9 +126,11 @@ async def rebuild_inventory_and_stock() -> None:
             continue
         items = p.get("items", [])
         additional_costs = p.get("additionalCosts", [])
-        items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in items])
+        items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in items if it.get("partTypeId")])
         costs_total = sum([float(c.get("amount", 0)) for c in additional_costs])
         for it in items:
+            if not it.get("partTypeId"):
+                continue  # service row
             qty = float(it.get("qty", 0))
             unit_cost = float(it.get("unitCost", 0))
             base_value = qty * unit_cost
@@ -163,10 +165,10 @@ async def inc_product_stock(product_id: str, qty: int) -> None:
         await c_product_stock.update_one({"_id": product_id}, {"$set": {"id": product_id, "qty": q}}, upsert=True)
 
 async def get_state() -> Dict[str, Any]:
-    balance_entries = [x async for x in c_balance.find().sort("date", -1)]
+    balance_entries = [x async for x in c_balance.find().sort([("date", -1), ("_id", -1)])]
     part_classes = [x async for x in c_part_classes.find().sort("name", 1)]
     part_types = [x async for x in c_part_types.find().sort("name", 1)]
-    purchases = [x async for x in c_purchases.find().sort("date", -1)]
+    purchases = [x async for x in c_purchases.find({"archived": {"$ne": True}}).sort("date", -1)]
     inventory = {doc["id"]: {"qty": doc.get("qty", 0), "avgCost": doc.get("avgCost", 0)} async for doc in c_inventory.find()}
     products = [x async for x in c_products.find().sort("name", 1)]
     assemblies = [x async for x in c_assemblies.find().sort("date", -1)]
@@ -211,18 +213,21 @@ class PartType(BaseModel):
     classId: str
     name: str
     unit: Optional[str] = "pcs"
-    manufacturer: Optional[str] = ""
-    sku: Optional[str] = ""
+    supplierId: Optional[str] = None
     note: Optional[str] = ""
-    runningLow: Optional[bool] = False
+    # deprecated fields (kept for backward compatibility on input)
+    manufacturer: Optional[str] = None
+    sku: Optional[str] = None
+    runningLow: Optional[bool] = None
     runningLowThreshold: Optional[float] = None
 
 class PurchaseItem(BaseModel):
     id: Optional[str] = None
-    partTypeId: str
+    partTypeId: Optional[str] = None  # None => service line (no inventory impact)
     qty: float
     unitCost: float
     note: Optional[str] = ""
+    isService: Optional[bool] = False
 
 class AdditionalCost(BaseModel):
     id: Optional[str] = None
@@ -240,6 +245,7 @@ class Purchase(BaseModel):
     total: float
     additionalCosts: Optional[List[AdditionalCost]] = []
     isService: bool = False
+    archived: bool = False
 
 class ProductBOMItem(BaseModel):
     id: Optional[str] = None
@@ -412,7 +418,17 @@ async def list_part_types():
 
 @app.post("/parts/types")
 async def add_part_type(item: PartType):
-    doc = ensure_id(item.model_dump())
+    payload = item.model_dump()
+    sid = payload.get("supplierId")
+    if sid:
+        sup = await c_suppliers.find_one({"_id": sid})
+        if not sup:
+            raise HTTPException(400, "Вказаний supplierId не існує")
+    # strip deprecated
+    payload.pop("manufacturer", None)
+    payload.pop("sku", None)
+    payload.pop("runningLow", None)
+    doc = ensure_id(payload)
     await c_part_types.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -455,9 +471,11 @@ class UpdatePartTypeRequest(BaseModel):
     classId: Optional[str] = None
     name: Optional[str] = None
     unit: Optional[str] = None
+    supplierId: Optional[str] = None
+    note: Optional[str] = None
+    # deprecated inputs ignored if provided
     manufacturer: Optional[str] = None
     sku: Optional[str] = None
-    note: Optional[str] = None
     runningLow: Optional[bool] = None
     runningLowThreshold: Optional[float] = None
 
@@ -474,6 +492,17 @@ async def update_part_type(type_id: str, body: UpdatePartTypeRequest):
         cls = await c_part_classes.find_one({"_id": new_class_id})
         if not cls:
             raise HTTPException(400, "Вказаний classId не існує")
+    # Validate supplier
+    new_supplier_id = patch.get("supplierId")
+    if new_supplier_id is not None:
+        if new_supplier_id != "":
+            sup = await c_suppliers.find_one({"_id": new_supplier_id})
+            if not sup:
+                raise HTTPException(400, "Вказаний supplierId не існує")
+    # Strip deprecated fields if present (keep runningLowThreshold for threshold persistence)
+    for k in ("manufacturer", "sku", "runningLow"):
+        if k in patch:
+            patch.pop(k, None)
     if not patch:
         return {"ok": True}
     await c_part_types.update_one({"_id": type_id}, {"$set": patch})
@@ -501,7 +530,7 @@ async def delete_part_type(type_id: str):
 # Purchases
 @app.get("/purchases")
 async def list_purchases():
-    docs = [x async for x in c_purchases.find().sort("date", -1)]
+    docs = [x async for x in c_purchases.find({"archived": {"$ne": True}}).sort("date", -1)]
     for d in docs: d.pop("_id", None)
     return docs
 
@@ -591,8 +620,37 @@ async def delete_purchase(purchase_id: str):
     await c_purchases.delete_one({"_id": purchase_id})
     # Also remove linked balance entries if any
     await c_balance.delete_many({"refPurchaseId": purchase_id})
+    # Fallback cleanup for legacy balance entries that may not have refPurchaseId
+    # Remove purchase-type balance entries on the same date without explicit ref linkage
+    try:
+        crit = {"type": "purchase", "refPurchaseId": {"$exists": False}, "date": p.get("date")}
+        # If vendor exists, prefer narrowing by vendor mention in note
+        vendor = (p.get("vendor") or "").strip()
+        if vendor:
+            crit["note"] = {"$regex": vendor}
+        await c_balance.delete_many(crit)
+    except Exception:
+        # best-effort cleanup; ignore errors
+        pass
     await rebuild_inventory_and_stock()
     return {"ok": True}
+
+@app.get("/purchases/archived")
+async def list_archived_purchases():
+    docs = [x async for x in c_purchases.find({"archived": True}).sort("date", -1)]
+    for d in docs: d.pop("_id", None)
+    return docs
+
+class ArchiveRequest(BaseModel):
+    archived: bool
+
+@app.post("/purchases/{purchase_id}/archive")
+async def archive_purchase(purchase_id: str, req: ArchiveRequest):
+    p = await c_purchases.find_one({"_id": purchase_id})
+    if not p:
+        raise HTTPException(404, "Purchase not found")
+    await c_purchases.update_one({"_id": purchase_id}, {"$set": {"archived": bool(req.archived)}})
+    return {"ok": True, "archived": bool(req.archived)}
 
 @app.post("/purchases/{purchase_id}/mark-delivered")
 async def mark_purchase_delivered(purchase_id: str):
@@ -604,21 +662,25 @@ async def mark_purchase_delivered(purchase_id: str):
     if p.get("isService"):
         await c_purchases.update_one({"_id": purchase_id}, {"$set": {"delivered": True}})
         return {"ok": True}
-    # Prepare allocation of additional costs (by value share)
-    items_total = sum([float(it["qty"]) * float(it["unitCost"]) for it in p["items"]])
+    # Prepare allocation of additional costs (by value share) only for goods (with partTypeId)
+    items_total = sum([float(it.get("qty", 0)) * float(it.get("unitCost", 0)) for it in p.get("items", []) if it.get("partTypeId")])
     costs_total = sum([float(c.get("amount", 0)) for c in p.get("additionalCosts", [])])
     # Avoid division by zero
     # Map partTypeId -> extra_cost_for_entire_item_row
     extra_map: Dict[str, float] = {}
     for it in p["items"]:
-        base_value = float(it["qty"]) * float(it["unitCost"]) if items_total > 0 else 0.0
+        if not it.get("partTypeId"):
+            continue
+        base_value = float(it.get("qty", 0)) * float(it.get("unitCost", 0)) if items_total > 0 else 0.0
         share = (base_value / items_total) * costs_total if items_total > 0 else 0.0
         extra_map[it["partTypeId"]] = extra_map.get(it["partTypeId"], 0.0) + share
 
     # Update inventory for each item with effective unit cost including allocation
     for it in p["items"]:
-        qty = float(it["qty"])
-        unit_cost = float(it["unitCost"])
+        if not it.get("partTypeId"):
+            continue
+        qty = float(it.get("qty", 0))
+        unit_cost = float(it.get("unitCost", 0))
         extra_total_for_item = extra_map.get(it["partTypeId"], 0.0)
         effective_unit_cost = unit_cost if qty <= 0 else (unit_cost + (extra_total_for_item / qty))
         await upsert_inventory(it["partTypeId"], qty, effective_unit_cost)
@@ -639,13 +701,31 @@ async def pay_purchase_from_balance(purchase_id: str):
     costs_total = sum([float(c["amount"]) for c in additional_costs])
     total = items_total + costs_total
 
+    # Determine if this is a service purchase
+    is_service = p.get("isService", False) or any(item.get("isService", False) for item in p.get("items", []))
+
+    # Build rich description
+    def fmt_item(it):
+        name = "послуга" if (it.get("isService") or it.get("partTypeId") in (None, "")) else "позиція"
+        qty = float(it.get("qty", 0))
+        unit_cost = float(it.get("unitCost", 0))
+        line_total = qty * unit_cost if not (it.get("isService") or qty == 0) else unit_cost
+        note = it.get("note")
+        base = f"{name}: {qty:.0f} × {unit_cost:.2f} = {line_total:.2f}"
+        return f"{base}{f' ({note})' if note else ''}"
+
+    details = ", ".join([fmt_item(it) for it in p.get("items", [])])
+    base_note = (f"Оплата сервісу" if is_service else "Оплата закупки")
+    vendor_text = p.get('vendor') or '(без постачальника)'
+    full_note = f"{base_note} {vendor_text} — {details}" if details else f"{base_note} {vendor_text}"
+
     entry = {
         "id": str(ObjectId()),
         "_id": None,
         "date": p.get("date") or now_iso(),
         "type": "purchase",
         "amount": total,
-        "note": f"Оплата закупки {p.get('vendor') or '(без постачальника)'}",
+        "note": full_note,
         "tag": "Покупка",
         "refPurchaseId": purchase_id,
     }

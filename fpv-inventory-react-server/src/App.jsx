@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil, Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil, Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap, Archive } from "lucide-react";
 import api from "./api";
 
 /**
@@ -38,6 +38,7 @@ export default function App() {
   const [tab, setTab] = useState("balance");
   const [group, setGroup] = useState("inventory"); // buyer | assembler | inventory | balance | settings
   const [error, setError] = useState("");
+  const [focusSupplierId, setFocusSupplierId] = useState(null);
 
   async function refresh() {
     setLoading(true);
@@ -85,6 +86,7 @@ export default function App() {
           classId: action.classId,
           name: action.name,
           unit: action.unit,
+          supplierId: action.supplierId,
           manufacturer: action.manufacturer,
           sku: action.sku,
           note: action.note,
@@ -97,21 +99,29 @@ export default function App() {
         // Normalize pricing: if a row uses "total" mode, convert to unitCost = totalCost / qty
         const items = action.items.map(it => {
           const qty = Number(it.qty || 0);
-          if (it.priceMode === "total") {
+          if (it.isService) {
+            // For services, use totalCost as unitCost with qty=1
+            const totalCost = Number(it.totalCost || 0);
+            return { partTypeId: undefined, qty: 1, unitCost: totalCost, note: (it.note || "").trim(), isService: true };
+          } else if (it.priceMode === "total") {
             const totalCost = Number(it.totalCost || 0);
             const unitCost = qty > 0 ? (totalCost / qty) : 0;
-            return { partTypeId: it.partTypeId, qty, unitCost, note: (it.note || "").trim() };
+            return { partTypeId: it.partTypeId, qty, unitCost, note: (it.note || "").trim(), isService: false };
           } else {
             const unitCost = Number(it.unitCost || 0);
-            return { partTypeId: it.partTypeId, qty, unitCost, note: (it.note || "").trim() };
+            return { partTypeId: it.partTypeId, qty, unitCost, note: (it.note || "").trim(), isService: false };
           }
         });
-        const total = items.reduce((s, it) => s + it.qty * it.unitCost, 0);
+        const total = items.reduce((s, it) => s + (Number(it.qty||0) * Number(it.unitCost||0)), 0);
         await api.addPurchase({ vendor: action.vendor || "", date: action.date || todayISO(), items, total, isService: !!action.isService });
       } else if (action.type === "MARK_PURCHASE_DELIVERED") {
         await api.markDelivered(action.purchaseId);
       } else if (action.type === "PAY_PURCHASE_FROM_BALANCE") {
         await api.payFromBalance(action.purchaseId);
+        try {
+          const s = await api.getState();
+          applyPartialState({ purchases: s.purchases, balanceEntries: s.balanceEntries });
+        } catch(_) {}
       } else if (action.type === "ADD_ADDITIONAL_COST") {
         const res = await api.addAdditionalCost(action.purchaseId, {
           amount: Number(action.amount),
@@ -130,13 +140,10 @@ export default function App() {
               : p
           ),
         });
-        // If purchase already delivered and not a service, inventory/stock may change -> refresh only those
+        // Refresh snapshots: balance can be corrected; inventory/stock may change
         try {
-          const updated = (state?.purchases || []).find(p => p.id === action.purchaseId);
-          if (updated?.delivered && !updated?.isService) {
-            const s = await api.getState();
-            applyPartialState({ inventory: s.inventory, productStock: s.productStock });
-          }
+          const s = await api.getState();
+          applyPartialState({ balanceEntries: s.balanceEntries, inventory: s.inventory, productStock: s.productStock, purchases: s.purchases });
         } catch (_) { /* no-op */ }
         return;
       } else if (action.type === "ADD_BALANCE_ENTRY") {
@@ -276,8 +283,8 @@ export default function App() {
         )}
         <main className="space-y-6">
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
-        {tab === "parts" && <PartsView state={state} dispatch={dispatch} />}
-        {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} />}
+        {tab === "parts" && <PartsView state={state} dispatch={dispatch} applyPartialState={applyPartialState} onOpenSupplier={(id)=>{ setTab('suppliers'); setFocusSupplierId(id); }} />}
+        {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} focusSupplierId={focusSupplierId} clearFocus={()=> setFocusSupplierId(null)} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} />}
@@ -375,6 +382,11 @@ function BalanceView({ state, dispatch, balance }) {
   const [editAmount, setEditAmount] = useState(0);
   const [editNote, setEditNote] = useState("");
   const [editTag, setEditTag] = useState("");
+  const [page, setPage] = useState(1);
+  const PER_PAGE = 20;
+
+  const totalPages = Math.max(1, Math.ceil((state.balanceEntries||[]).length / PER_PAGE));
+  const pageRows = (state.balanceEntries||[]).slice((page-1)*PER_PAGE, (page-1)*PER_PAGE + PER_PAGE);
 
   const cols = [
     { key: "date", header: "Дата" },
@@ -454,12 +466,21 @@ function BalanceView({ state, dispatch, balance }) {
           <Plus className="w-4 h-4" /> Додати
         </button>
       </div>
-      <Table columns={cols} rows={state.balanceEntries} empty="Поки що немає рухів" />
+      <Table columns={cols} rows={pageRows} empty="Поки що немає рухів" />
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between mt-2">
+          <div className="text-sm text-gray-600">Стор. {page} з {totalPages}</div>
+          <div className="flex items-center gap-2">
+            <button className="px-3 py-1 rounded-xl border text-sm" onClick={()=> setPage(p => Math.max(1, p-1))} disabled={page===1}>Назад</button>
+            <button className="px-3 py-1 rounded-xl border text-sm" onClick={()=> setPage(p => Math.min(totalPages, p+1))} disabled={page===totalPages}>Вперед</button>
+          </div>
+        </div>
+      )}
     </Section>
   );
 }
 
-function PartsView({ state, dispatch }) {
+function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
   const [className, setClassName] = useState("");
   const [classColor, setClassColor] = useState("");
   const [classIcon, setClassIcon] = useState("");
@@ -470,10 +491,8 @@ function PartsView({ state, dispatch }) {
   const [showAddClass, setShowAddClass] = useState(false);
   const [ptName, setPtName] = useState("");
   const [ptUnit, setPtUnit] = useState("pcs");
-  const [ptThreshold, setPtThreshold] = useState("");
   const [ptClassId, setPtClassId] = useState(state.partClasses[0]?.id || "");
-  const [ptMan, setPtMan] = useState("");
-  const [ptSku, setPtSku] = useState("");
+  const [ptSupplierId, setPtSupplierId] = useState("");
   const [ptNote, setPtNote] = useState("");
   const [showAddType, setShowAddType] = useState(false);
 
@@ -545,13 +564,12 @@ function PartsView({ state, dispatch }) {
       const q = typeQuery.trim().toLowerCase();
       rows = rows.filter(t =>
         (t.name || "").toLowerCase().includes(q) ||
-        (t.manufacturer || "").toLowerCase().includes(q) ||
-        (t.sku || "").toLowerCase().includes(q) ||
+        ((state.suppliers||[]).find(s => s.id === t.supplierId || (s.typeIds||[]).includes(t.id))?.name || "").toLowerCase().includes(q) ||
         (t.note || "").toLowerCase().includes(q)
       );
     }
     return rows;
-  }, [typeOptions, filterClassId, filterTypeId, typeQuery]);
+  }, [typeOptions, filterClassId, filterTypeId, typeQuery, state.suppliers]);
 
   const typeTotalPages = Math.max(1, Math.ceil(filteredTypes.length / TYPE_PER_PAGE));
   useEffect(() => { if (typePage > typeTotalPages) setTypePage(typeTotalPages); }, [typeTotalPages]);
@@ -624,16 +642,12 @@ function PartsView({ state, dispatch }) {
   const [editTypeName, setEditTypeName] = useState("");
   const [editTypeClassId, setEditTypeClassId] = useState("");
   const [editTypeUnit, setEditTypeUnit] = useState("pcs");
-  const [editTypeMan, setEditTypeMan] = useState("");
-  const [editTypeSku, setEditTypeSku] = useState("");
+  const [editTypeSupplierId, setEditTypeSupplierId] = useState("");
   const [editTypeNote, setEditTypeNote] = useState("");
   const [editTypeThreshold, setEditTypeThreshold] = useState("");
 
   const typeCols = [
     { key: "rownum", header: "#", thClass: "w-12", tdClass: "w-12 text-gray-500", cell: (_r, i) => (i + 1) },
-    { key: "name", header: "Назва виду", cell: (r) => (
-      typeEditingId === r.id ? (<TextInput value={editTypeName} onChange={setEditTypeName} placeholder="Назва виду" />) : r.name
-    ) },
     { key: "class", header: "Клас", cell: (r) => (
       typeEditingId === r.id ? (
         <Select value={editTypeClassId} onChange={setEditTypeClassId}>
@@ -653,30 +667,43 @@ function PartsView({ state, dispatch }) {
         })()
       )
     ) },
+    { key: "name", header: "Назва виду", cell: (r) => (
+      typeEditingId === r.id ? (<TextInput value={editTypeName} onChange={setEditTypeName} placeholder="Назва виду" />) : r.name
+    ) },
     { key: "unit", header: "Одиниця", cell: (r) => (
       typeEditingId === r.id ? (<TextInput value={editTypeUnit} onChange={setEditTypeUnit} placeholder="pcs/m/cm" />) : r.unit
     ) },
-    { key: "threshold", header: "Поріг (pcs)", cell: (r) => (
+    { key: "thresholdDisplay", header: "Поріг", cell: (r) => (
       typeEditingId === r.id ? (
         editTypeUnit === 'pcs' ? (
-          <input type="number" min="0" step="1" className="w-full border rounded-xl px-3 py-2" value={editTypeThreshold} onChange={(e)=> setEditTypeThreshold(e.target.value)} placeholder="напр., 5" />
+          <input type="number" min="0" step="1" className="w-full border rounded-xl px-3 py-2" value={editTypeThreshold} onChange={(e)=> setEditTypeThreshold(e.target.value)} placeholder="напр., 10" />
         ) : (
-          <span className="text-xs text-gray-500">—</span>
+          <span className="text-xs text-gray-500">Вручну</span>
         )
       ) : (
-        r.unit === 'pcs' ? (r.runningLowThreshold ?? '—') : '—'
+        r.unit === 'pcs' ? (r.runningLowThreshold ?? 10) : 'Вручну'
       )
     ) },
-    { key: "runningLow", header: "Закінчується", cell: (r) => (
-      r.unit && r.unit !== 'pcs' ? (
-        r.runningLow ? <span className="px-2 py-0.5 rounded-full text-xs border bg-yellow-50 border-yellow-300 text-yellow-800">Закінчується</span> : '—'
-      ) : '—'
-    ) },
-    { key: "manufacturer", header: "Виробник", cell: (r) => (
-      typeEditingId === r.id ? (<TextInput value={editTypeMan} onChange={setEditTypeMan} placeholder="Виробник" />) : (r.manufacturer || "")
-    ) },
-    { key: "sku", header: "SKU", cell: (r) => (
-      typeEditingId === r.id ? (<TextInput value={editTypeSku} onChange={setEditTypeSku} placeholder="SKU" />) : (r.sku || "")
+    { key: "supplier", header: "Постачальник", cell: (r) => (
+      typeEditingId === r.id ? (
+        <Select value={editTypeSupplierId} onChange={setEditTypeSupplierId}>
+          <option value="">— Постачальник —</option>
+          {(state.suppliers||[]).map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
+        </Select>
+      ) : (
+        (() => {
+          const s = (state.suppliers||[]).find(x => x.id === r.supplierId || (x.typeIds||[]).includes(r.id));
+          if (!s) return '—';
+          const style = makeClassChipStyle();
+          return (
+            <button
+              className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100"
+              onClick={(e)=>{ e.preventDefault(); if (onOpenSupplier) onOpenSupplier(s.id); }}
+              title="Перейти до постачальників"
+            >{s.name}</button>
+          );
+        })()
+      )
     ) },
     { key: "note", header: "Нотатка", cell: (r) => (
       typeEditingId === r.id ? (<TextInput value={editTypeNote} onChange={setEditTypeNote} placeholder="Нотатка" />) : (r.note || "")
@@ -688,7 +715,11 @@ function PartsView({ state, dispatch }) {
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
               try {
                 const current = typeOptions.find(t=>t.id===r.id);
-                await dispatch({ type: 'UPDATE_PART_TYPE', id: r.id, classId: editTypeClassId, name: editTypeName.trim() || r.name, unit: editTypeUnit, manufacturer: editTypeMan, sku: editTypeSku, note: editTypeNote, runningLow: current?.unit && current.unit !== 'pcs' ? !!current?.runningLow : false, runningLowThreshold: editTypeUnit === 'pcs' && editTypeThreshold !== '' ? Number(editTypeThreshold) : undefined });
+                const newThreshold = editTypeUnit === 'pcs' ? (editTypeThreshold === '' ? 10 : Number(editTypeThreshold)) : undefined;
+                await dispatch({ type: 'UPDATE_PART_TYPE', id: r.id, classId: editTypeClassId, name: editTypeName.trim() || r.name, unit: editTypeUnit, supplierId: editTypeSupplierId || null, note: editTypeNote, runningLowThreshold: newThreshold });
+                // optimistic local update without full refresh
+                const updated = (state.partTypes||[]).map(t => t.id === r.id ? { ...t, classId: editTypeClassId, name: editTypeName.trim() || r.name, unit: editTypeUnit, supplierId: editTypeSupplierId || null, note: editTypeNote, runningLowThreshold: newThreshold === undefined ? t.runningLowThreshold : newThreshold } : t);
+                applyPartialState({ partTypes: updated });
                 setTypeEditingId(null);
               } catch(e) { alert(String(e)); }
             }}>Зберегти</button>
@@ -701,14 +732,16 @@ function PartsView({ state, dispatch }) {
               setEditTypeName(r.name||'');
               setEditTypeClassId(r.classId||'');
               setEditTypeUnit(r.unit||'pcs');
-              setEditTypeMan(r.manufacturer||'');
-              setEditTypeSku(r.sku||'');
+              setEditTypeSupplierId(r.supplierId||'');
               setEditTypeNote(r.note||'');
               setEditTypeThreshold(r.unit === 'pcs' ? (r.runningLowThreshold ?? '') : '');
             }}><Pencil className="w-4 h-4"/></button>
             <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
               if (!confirm('Видалити вид деталі? Якщо використовується в закупках або продуктах — видалення неможливе.')) return;
-              try { await dispatch({ type: 'DELETE_PART_TYPE', id: r.id }); } catch(e) { alert(String(e)); }
+              try {
+                await dispatch({ type: 'DELETE_PART_TYPE', id: r.id });
+                applyPartialState({ partTypes: (state.partTypes||[]).filter(t=> t.id !== r.id) });
+              } catch(e) { alert(String(e)); }
             }}><Trash2 className="w-4 h-4"/></button>
           </>
         )}
@@ -907,26 +940,19 @@ function PartsView({ state, dispatch }) {
             </Select>
             <TextInput value={ptName} onChange={setPtName} placeholder="Напр., Tenpower 40T, Нікель 8мм" />
             <TextInput value={ptUnit} onChange={setPtUnit} placeholder="Одиниця (pcs/m/cm)" />
-            <TextInput value={ptMan} onChange={setPtMan} placeholder="Виробник (необов'язково)" />
-            <TextInput value={ptSku} onChange={setPtSku} placeholder="SKU (необов'язково)" />
+            <Select value={ptSupplierId} onChange={setPtSupplierId}>
+              <option value="">— Постачальник —</option>
+              {(state.suppliers||[]).map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
+            </Select>
             <TextInput value={ptNote} onChange={setPtNote} placeholder="Нотатка" />
-            <div className="md:col-span-6">
-              {ptUnit === 'pcs' && (
-                <div className="grid md:grid-cols-3 gap-3 items-end">
-                  <div>
-                    <div className="text-xs text-gray-500 mb-1">Позначити як закінчується при &lt; ніж (шт)</div>
-                    <input type="number" min="0" step="1" className="w-full border rounded-xl px-3 py-2" value={ptThreshold} onChange={(e)=> setPtThreshold(e.target.value)} placeholder="напр., 5" />
-                  </div>
-                </div>
-              )}
-            </div>
+
             <div className="md:col-span-6 flex items-center gap-2">
               <button
                 className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
                 onClick={() => {
                   if (!ptClassId || !ptName.trim()) return;
-                  dispatch({ type: "ADD_PART_TYPE", classId: ptClassId, name: ptName, unit: ptUnit, manufacturer: ptMan, sku: ptSku, note: ptNote, runningLowThreshold: ptUnit === 'pcs' && ptThreshold !== '' ? Number(ptThreshold) : undefined });
-                  setPtName(""); setPtUnit("pcs"); setPtMan(""); setPtSku(""); setPtNote(""); setPtThreshold("");
+                  dispatch({ type: "ADD_PART_TYPE", classId: ptClassId, name: ptName, unit: ptUnit, supplierId: ptSupplierId || null, note: ptNote });
+                  setPtName(""); setPtUnit("pcs"); setPtSupplierId(""); setPtNote("");
                   setShowAddType(false);
                 }}
               >
@@ -981,7 +1007,7 @@ function PartsView({ state, dispatch }) {
   );
 }
 
-function SuppliersView({ state, refresh, applyPartialState }) {
+function SuppliersView({ state, refresh, applyPartialState, focusSupplierId, clearFocus }) {
   const [name, setName] = useState("");
   const [website, setWebsite] = useState("");
   const [note, setNote] = useState("");
@@ -1068,6 +1094,25 @@ function SuppliersView({ state, refresh, applyPartialState }) {
   const pageEndIndex = Math.min(filteredSuppliersSorted.length, page * PER_PAGE);
   const supplierPageRows = filteredSuppliersSorted.slice((page - 1) * PER_PAGE, (page - 1) * PER_PAGE + PER_PAGE);
 
+  // Focus supplier when requested
+  useEffect(() => {
+    if (!focusSupplierId) return;
+    const idx = filteredSuppliersSorted.findIndex(s => s.id === focusSupplierId);
+    if (idx >= 0) {
+      const newPage = Math.floor(idx / PER_PAGE) + 1;
+      setPage(newPage);
+      setTimeout(() => {
+        const el = document.getElementById(`supplier-row-${focusSupplierId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('ring-2','ring-blue-300');
+          setTimeout(()=> el.classList.remove('ring-2','ring-blue-300'), 1500);
+        }
+      }, 0);
+    }
+    if (clearFocus) clearFocus();
+  }, [focusSupplierId, filteredSuppliersSorted]);
+
   const activeFilterChips = useMemo(() => {
     const chips = [];
     if (filterClassId) chips.push(`Клас: ${classOptions.find(c=>c.id===filterClassId)?.name || filterClassId}`);
@@ -1149,6 +1194,7 @@ function SuppliersView({ state, refresh, applyPartialState }) {
   }
 
   const cols = [
+    { key: "idx", header: "#", thClass: "w-10", cell: (_s, i) => (<span className="text-gray-500">{i + 1}</span>) },
     { key: "name", header: "Назва", cell: (s) => editingId === s.id ? (
       <TextInput value={editName} onChange={setEditName} placeholder="Назва" />
     ) : s.name },
@@ -1425,7 +1471,7 @@ function SuppliersView({ state, refresh, applyPartialState }) {
       </Section>
 
       <Section title="Список постачальників" icon={Package}>
-        <Table columns={cols} rows={supplierPageRows} empty="Постачальників ще немає" />
+        <Table columns={cols} rows={supplierPageRows.map(s => ({ ...s, _rowId: s.id }))} empty="Постачальників ще немає" rowProps={(row)=> ({ id: `supplier-row-${row._rowId}` })} />
         {totalPages > 1 && (
           <div className="flex items-center justify-end mt-2 gap-1">
             <button
@@ -1462,6 +1508,15 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   const [newSupplierName, setNewSupplierName] = useState("");
   const [newSupplierWebsite, setNewSupplierWebsite] = useState("");
   const [newSupplierForPurchaseId, setNewSupplierForPurchaseId] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [archivedPurchases, setArchivedPurchases] = useState([]);
+
+  // Load archived purchases when switching to archive view
+  useEffect(() => {
+    if (showArchived) {
+      api.listArchivedPurchases().then(setArchivedPurchases).catch(() => setArchivedPurchases([]));
+    }
+  }, [showArchived]);
 
   // Small icon registry for classes
   const ICONS = {
@@ -1499,7 +1554,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     setEditingId(p.id);
     setEditVendor(p.vendor || "");
     setEditDate(p.date || todayISO());
-    setEditItems(p.items.map(it => ({ id: it.id, partTypeId: it.partTypeId, qty: Number(it.qty||0), unitCost: Number(it.unitCost||0), note: it.note || "" })));
+    setEditItems(p.items.map(it => ({ id: it.id, partTypeId: it.partTypeId, qty: Number(it.qty||0), unitCost: Number(it.unitCost||0), note: it.note || "", isService: !!it.isService })));
     setEditCosts((p.additionalCosts || []).map(c => ({ id: c.id, description: c.description || "", amount: Number(c.amount||0), date: c.date || todayISO() })));
   }
   async function saveEditRow() {
@@ -1552,7 +1607,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }
 
   const filteredPurchases = useMemo(() => {
-    let rows = state.purchases;
+    let rows = showArchived ? archivedPurchases : state.purchases;
 
     // Status filters (services are considered delivered for filtering purposes)
     rows = rows.filter((r) => {
@@ -1615,7 +1670,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       return at === bt ? 0 : (at > bt ? 1 : -1) * dir;
     });
     return sorted;
-  }, [state.purchases, deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
+  }, [state.purchases, archivedPurchases, showArchived, deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
 
   const activeFilters = useMemo(() => {
     const chips = [];
@@ -1725,7 +1780,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         priceMode: "unit",  // "unit" | "total"
         unitCost: 0,        // використовується якщо priceMode === "unit"
         totalCost: 0,       // використовується якщо priceMode === "total"
-        note: ""
+        note: "",
+        isService: false
       }
     ]);
   }
@@ -1740,6 +1796,10 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     if (items.length === 0) return false;
     return items.some((r) => {
       const qty = Number(r.qty || 0);
+      if (r.isService) {
+        // For services, require note and totalCost > 0
+        return !(r.note && r.note.trim().length > 0) || Number(r.totalCost || 0) <= 0;
+      }
       if (!r.partTypeId || qty <= 0) return true;
       if (r.priceMode === 'unit') return Number(r.unitCost || 0) <= 0;
       return Number(r.totalCost || 0) <= 0;
@@ -1783,24 +1843,40 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             return (
               <div key={it.id} className="space-y-1">
                 <div>
-                  <button
-                    className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50 inline-flex items-center gap-1"
-                    style={makeClassChipStyle(partClass?.color)}
-                    onClick={()=> setClassFilter(partClass?.id || '')}
-                  >{renderClassIcon(partClass?.icon)} {partClass?.name || "?"}</button>
+                  {it.isService ? (
+                    <span className="text-gray-400">—</span>
+                  ) : (
+                    <button
+                      className="px-2 py-0.5 rounded-full text-xs border hover:bg-gray-50 inline-flex items-center gap-1"
+                      style={makeClassChipStyle(partClass?.color)}
+                      onClick={()=> setClassFilter(partClass?.id || '')}
+                    >{renderClassIcon(partClass?.icon)} {partClass?.name || "?"}</button>
+                  )}
                 </div>
                 <div>
-                  <button className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100" onClick={()=> setTypeFilter(part?.id || '')}>{part?.name || "?"}</button>
+                  {it.isService ? (
+                    <span className="text-gray-400">—</span>
+                  ) : (
+                    <button className="px-2 py-0.5 rounded-full text-xs border bg-gray-50 border-gray-300 text-gray-800 hover:bg-gray-100" onClick={()=> setTypeFilter(part?.id || '')}>{part?.name || "?"}</button>
+                  )}
                 </div>
                 {isEditing ? (
-                  <div className="flex items-center gap-2">
-                    <NumberInput className="w-20" value={(editItems.find(x=>x.id===it.id)||{}).qty ?? it.qty} onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, qty: Number(v) }: x))} />
-                    <span className="text-gray-500">×</span>
-                    <NumberInput className="w-20" value={(editItems.find(x=>x.id===it.id)||{}).unitCost ?? it.unitCost} onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, unitCost: Number(v) }: x))} />
-                    <span className="text-xs text-gray-500">= {currency(((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).qty) * ((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).unitCost + (share/( (editItems.find(x=>x.id===it.id)||{qty:it.qty}).qty || 1))))}</span>
-                  </div>
+                  ( (editItems.find(x=>x.id===it.id)||{}).isService || it.isService ) ? (
+                    <div className="text-gray-500 text-xs">—</div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <NumberInput className="w-20" value={(editItems.find(x=>x.id===it.id)||{}).qty ?? it.qty} onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, qty: Number(v) }: x))} />
+                      <span className="text-gray-500">×</span>
+                      <NumberInput className="w-20" value={(editItems.find(x=>x.id===it.id)||{}).unitCost ?? it.unitCost} onChange={(v)=> setEditItems(arr=> arr.map(x=> x.id===it.id? { ...x, unitCost: Number(v) }: x))} />
+                      <span className="text-xs text-gray-500">= {currency(((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).qty) * ((editItems.find(x=>x.id===it.id)||{qty:it.qty,unitCost:it.unitCost}).unitCost + (share/( (editItems.find(x=>x.id===it.id)||{qty:it.qty}).qty || 1))))}</span>
+                    </div>
+                  )
                 ) : (
-                  <div><span>{it.qty} × {currency(effectiveUnit)} = <b>{currency(effectiveTotal)}</b></span></div>
+                  it.isService ? (
+                    <div className="text-gray-500">—</div>
+                  ) : (
+                    <div><span>{it.qty} × {currency(effectiveUnit)} = <b>{currency(effectiveTotal)}</b></span></div>
+                  )
                 )}
               </div>
             );
@@ -1884,41 +1960,43 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
             disabled={r.paidFromBalance}
           >Оплатити з балансу</button>
         </div>
-        <label className="flex items-center gap-2 text-xs text-gray-700">
-          <input
-            type="checkbox"
-            className="scale-110"
-            checked={!!r.isService}
-            onChange={async (e) => {
-              const next = e.target.checked;
-              const prev = !!r.isService;
-              // Оптимістичне оновлення UI конкретного рядка
-              applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: next } : p) });
-              try {
-                await api.toggleService(r.id, next);
-                // Швидко оновимо інвентар і залишки продуктів (без повного state)
-                const s = await api.getState();
-                applyPartialState({ inventory: s.inventory, productStock: s.productStock });
-              } catch (err) {
-                // Відкотимо оптимістичну зміну при помилці
-                applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: prev } : p) });
-                alert(String(err));
-              }
-            }}
-          />
-          Позначити як послуги
-          <span
-            className="inline-flex items-center cursor-pointer"
-            title="не впливає на склад"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              alert("Послуги: закупка не впливає на склад. Позиції не додаються у склад, додаткові витрати не розподіляються по собівартості.");
-            }}
-          >
-            <Info className="w-3 h-3 text-gray-500" />
-          </span>
-        </label>
+        {editingId === r.id && (
+          <label className="flex items-center gap-2 text-xs text-gray-700">
+            <input
+              type="checkbox"
+              className="scale-110"
+              checked={!!r.isService}
+              onChange={async (e) => {
+                const next = e.target.checked;
+                const prev = !!r.isService;
+                // Оптимістичне оновлення UI конкретного рядка
+                applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: next } : p) });
+                try {
+                  await api.toggleService(r.id, next);
+                  // Швидко оновимо інвентар і залишки продуктів (без повного state)
+                  const s = await api.getState();
+                  applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+                } catch (err) {
+                  // Відкотимо оптимістичну зміну при помилці
+                  applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: prev } : p) });
+                  alert(String(err));
+                }
+              }}
+            />
+            Позначити як послуги
+            <span
+              className="inline-flex items-center cursor-pointer"
+              title="не впливає на склад"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                alert("Послуги: закупка не впливає на склад. Позиції не додаються у склад, додаткові витрати не розподіляються по собівартості.");
+              }}
+            >
+              <Info className="w-3 h-3 text-gray-500" />
+            </span>
+          </label>
+        )}
         {!r.isService && editingId !== r.id && (
           <button
             className="px-3 py-1 rounded-xl border text-sm hover:bg-blue-50 border-blue-300 text-blue-700"
@@ -1957,13 +2035,35 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                 await api.deletePurchase(r.id);
                 applyPartialState({ purchases: state.purchases.filter(p => p.id !== r.id) });
                 const s = await api.getState();
-                applyPartialState({ inventory: s.inventory, productStock: s.productStock });
+                applyPartialState({ inventory: s.inventory, productStock: s.productStock, balanceEntries: s.balanceEntries });
               } catch (e) {
                 alert(String(e));
               }
             }}
           >
             <Trash2 className="w-4 h-4" />
+          </button>
+          <button
+            className={`p-2 rounded-lg border ${showArchived ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-orange-50 border-orange-300 text-orange-700'} hover:opacity-80`}
+            title={showArchived ? 'Розархівувати' : 'Архівувати'}
+            onClick={async () => {
+              try {
+                await api.setPurchaseArchived(r.id, !showArchived);
+                if (showArchived) {
+                  // Remove from archived list, refresh active
+                  setArchivedPurchases(a => a.filter(p => p.id !== r.id));
+                  const s = await api.getState();
+                  applyPartialState({ purchases: s.purchases });
+                } else {
+                  // Remove from active list, will appear in archived
+                  applyPartialState({ purchases: state.purchases.filter(p => p.id !== r.id) });
+                }
+              } catch (e) {
+                alert(String(e));
+              }
+            }}
+          >
+            <Archive className="w-4 h-4" />
           </button>
         </div>
         {expandedPurchase === r.id && !r.isService && (
@@ -2054,6 +2154,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                   <tr>
                       <th className="p-2 text-left">Клас</th>
                       <th className="p-2 text-left">Деталь</th>
+                      <th className="p-2 text-left">Послуга</th>
                       <th className="p-2 text-left">Кількість</th>
                       <th className="p-2 text-left">Тип ціни</th>
                       <th className="p-2 text-left">Ціна</th>
@@ -2066,33 +2167,72 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                     {items.map((row) => (
                       <tr key={row.tempId} className="odd:bg-white even:bg-gray-50">
                         <td className="p-2">
-                          <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.classId} onChange={(e) => {
-                            const nextClass = e.target.value;
-                            const firstType = state.partTypes.find(t => t.classId === nextClass)?.id || "";
-                            updateRow(row.tempId, { classId: nextClass, partTypeId: firstType });
-                          }}>
-                            {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
-                          </select>
+                          {row.isService ? (
+                            <span className="text-gray-400">—</span>
+                          ) : (
+                            <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.classId} onChange={(e) => {
+                              const nextClass = e.target.value;
+                              const firstType = state.partTypes.find(t => t.classId === nextClass)?.id || "";
+                              updateRow(row.tempId, { classId: nextClass, partTypeId: firstType });
+                            }}>
+                              {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                            </select>
+                          )}
                         </td>
                         <td className="p-2">
-                          <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.partTypeId} onChange={(e) => updateRow(row.tempId, { partTypeId: e.target.value })}>
-                            {state.partTypes.filter(p => !row.classId || p.classId === row.classId).map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                          </select>
+                          {row.isService ? (
+                            <span className="text-gray-400">—</span>
+                          ) : (
+                            <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.partTypeId} onChange={(e) => updateRow(row.tempId, { partTypeId: e.target.value })}>
+                              {state.partTypes.filter(p => !row.classId || p.classId === row.classId).map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                            </select>
+                          )}
                         </td>
                         <td className="p-2">
-                          <NumberInput value={row.qty} onChange={(v) => updateRow(row.tempId, { qty: Number(v) })} />
+                          <label className="inline-flex items-center gap-2 text-xs">
+                            <input type="checkbox" className="scale-110" checked={!!row.isService} onChange={(e)=>{
+                              const isService = e.target.checked;
+                              updateRow(row.tempId, {
+                                isService,
+                                classId: isService ? "" : (row.classId || state.partClasses[0]?.id || ""),
+                                partTypeId: isService ? "" : (row.partTypeId || state.partTypes.find(t=>t.classId === (row.classId || state.partClasses[0]?.id || ""))?.id || ""),
+                                // clear pricing fields appropriately
+                                qty: isService ? 0 : (row.qty || 0),
+                                unitCost: isService ? 0 : (row.unitCost || 0),
+                                totalCost: isService ? (row.totalCost || 0) : (row.totalCost || 0),
+                              });
+                            }} /> Позначити як послуга
+                          </label>
                         </td>
                         <td className="p-2">
-                          <select
-                            className="w-full border rounded-xl px-2 py-1 bg-white"
-                            value={row.priceMode}
-                            onChange={(e) => updateRow(row.tempId, { priceMode: e.target.value })}
-                          >
-                            <option value="unit">Ціна за од.</option>
-                            <option value="total">Загальна ціна</option>
-                          </select>
+                          {row.isService ? (
+                            <span className="text-gray-400">—</span>
+                          ) : (
+                            <NumberInput value={row.qty} onChange={(v) => updateRow(row.tempId, { qty: Number(v) })} />
+                          )}
                         </td>
-                        {row.priceMode === "unit" ? (
+                        <td className="p-2">
+                          {row.isService ? (
+                            <span className="text-gray-400">—</span>
+                          ) : (
+                            <select
+                              className="w-full border rounded-xl px-2 py-1 bg-white"
+                              value={row.priceMode}
+                              onChange={(e) => updateRow(row.tempId, { priceMode: e.target.value })}
+                            >
+                              <option value="unit">Ціна за од.</option>
+                              <option value="total">Загальна ціна</option>
+                            </select>
+                          )}
+                        </td>
+                        {row.isService ? (
+                          <td className="p-2">
+                            <NumberInput
+                              value={row.totalCost}
+                              onChange={(v) => updateRow(row.tempId, { totalCost: Number(v) })}
+                            />
+                          </td>
+                        ) : row.priceMode === "unit" ? (
                           <td className="p-2">
                             <NumberInput
                               value={row.unitCost}
@@ -2108,15 +2248,17 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                           </td>
                         )}
                         <td className="p-2 font-medium">
-                          {row.priceMode === "unit"
-                            ? currency(Number(row.qty || 0) * Number(row.unitCost || 0))
-                            : currency(Number(row.totalCost || 0))}
+                          {row.isService
+                            ? currency(Number(row.totalCost || 0))
+                            : (row.priceMode === "unit"
+                                ? currency(Number(row.qty || 0) * Number(row.unitCost || 0))
+                                : currency(Number(row.totalCost || 0)))}
                         </td>
                         <td className="p-2">
                           <TextInput
                             value={row.note || ""}
                             onChange={(v) => updateRow(row.tempId, { note: v })}
-                            placeholder="Нотатка (необов'язково)"
+                            placeholder={row.isService ? "Нотатка (обов'язково для послуги)" : "Нотатка (необов'язково)"}
                           />
                         </td>
                         <td className="p-2">
@@ -2146,15 +2288,18 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                       if (items.length === 0) return;
                       const valid = items.every((r) => {
                         const qty = Number(r.qty || 0);
+                        if (r.isService) {
+                          return Number(r.totalCost || 0) > 0;
+                        }
                         if (!r.partTypeId || qty <= 0) return false;
                         if (r.priceMode === "total") {
-                          return Number(r.totalCost || 0) >= 0;
+                          return Number(r.totalCost || 0) > 0;
                         }
-                        return Number(r.unitCost || 0) >= 0;
+                        return Number(r.unitCost || 0) > 0;
                       });
                       if (!valid) return;
                       const vendorName = (state.suppliers||[]).find(s=>s.id===vendorId)?.name || "";
-                      dispatch({ type: "ADD_PURCHASE", vendor: vendorName, date, items, isService });
+                      dispatch({ type: "ADD_PURCHASE", vendor: vendorName, date, items, isService: items.every(x=> !!x.isService) });
                       setVendorId(""); setDate(todayISO()); setItems([]); setIsService(false);
                     }}
                   ><Save className="w-4 h-4" /> Зберегти закупку</button>
@@ -2193,6 +2338,13 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         icon={ShoppingCart}
         right={(
           <div className="flex items-center gap-2">
+            <button
+              className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showArchived ? 'bg-orange-100 border-orange-300 text-orange-800' : 'bg-white hover:bg-gray-50'}`}
+              onClick={() => setShowArchived((v) => !v)}
+              title={showArchived ? 'Показати активні' : 'Показати архів'}
+            >
+              <Archive className="w-4 h-4" /> {showArchived ? 'Архів' : 'Активні'}
+            </button>
             <button
               className={`px-3 py-2 rounded-xl border flex items-center gap-2 ${showFilters ? 'bg-gray-900 text-white' : 'bg-white hover:bg-gray-50'}`}
               onClick={() => setShowFilters((v) => !v)}
@@ -2472,8 +2624,18 @@ function ProductsView({ state, dispatch }) {
   const [rows, setRows] = useState([]);
 
   function addRow() {
-    const defaultPart = state.partTypes[0]?.id || "";
-    setRows((x) => [...x, { id: Math.random().toString(36).slice(2), partTypeId: defaultPart, qty: 0, note: "" }]);
+    const defaultClass = state.partClasses[0]?.id || "";
+    const defaultPartInClass = state.partTypes.find(t => t.classId === defaultClass)?.id || state.partTypes[0]?.id || "";
+    setRows((x) => [
+      ...x,
+      {
+        id: Math.random().toString(36).slice(2),
+        classId: defaultClass,
+        partTypeId: defaultPartInClass,
+        qty: 0,
+        note: "",
+      },
+    ]);
   }
   function updateRow(id, patch) {
     setRows((x) => x.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -2513,7 +2675,8 @@ function ProductsView({ state, dispatch }) {
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="p-2 text-left">Деталь</th>
+                  <th className="p-2 text-left">Клас</th>
+                  <th className="p-2 text-left">Деталь</th>
                     <th className="p-2 text-left">Кількість на 1 од.</th>
                     <th className="p-2 text-left">Сер. собівартість</th>
                     <th className="p-2 text-left">Внесок у ціну</th>
@@ -2527,12 +2690,35 @@ function ProductsView({ state, dispatch }) {
                     const part = partById(r.partTypeId);
                     return (
                       <tr key={r.id} className="odd:bg-white even:bg-gray-50">
-                        <td className="p-2">
-                          <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.partTypeId} onChange={(e) => updateRow(r.id, { partTypeId: e.target.value })}>
-                            {state.partTypes.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                          </select>
-                          <div className="text-xs text-gray-500">Од.: {part?.unit || 'pcs'}</div>
-                        </td>
+                      <td className="p-2">
+                        <select
+                          className="w-full border rounded-xl px-2 py-1 bg-white"
+                          value={r.classId || ""}
+                          onChange={(e) => {
+                            const nextClassId = e.target.value;
+                            const firstTypeInClass = state.partTypes.find(t => t.classId === nextClassId)?.id || "";
+                            updateRow(r.id, { classId: nextClassId, partTypeId: firstTypeInClass });
+                          }}
+                        >
+                          {state.partClasses.map((c) => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="p-2">
+                        <select
+                          className="w-full border rounded-xl px-2 py-1 bg-white"
+                          value={r.partTypeId}
+                          onChange={(e) => updateRow(r.id, { partTypeId: e.target.value })}
+                        >
+                          {state.partTypes
+                            .filter((p) => !r.classId || p.classId === r.classId)
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                        </select>
+                        <div className="text-xs text-gray-500">Од.: {part?.unit || 'pcs'}</div>
+                      </td>
                         <td className="p-2"><NumberInput value={r.qty} onChange={(v) => updateRow(r.id, { qty: Number(v) })} /></td>
                         <td className="p-2">{currency(avg)}</td>
                         <td className="p-2 font-medium">{currency(avg * Number(r.qty || 0))}</td>

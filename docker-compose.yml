@@ -1,4 +1,14 @@
 services:
+  mongo:
+    image: mongo:6
+    container_name: fpv-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - fpv-network
   # Backend (FastAPI) with auto-reload and bind mount
   backend:
     build:
@@ -9,7 +19,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGODB_URI=${MONGODB_URI:-mongodb+srv://root:4556@cluster0.a1fqoim.mongodb.net/}
+      - MONGODB_URI=${MONGODB_URI:-mongodb://mongo:27017}
       - DB_NAME=${DB_NAME:-fpv_inventory}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
     volumes:
@@ -36,9 +46,13 @@ services:
     command: npm run dev -- --host 0.0.0.0
     depends_on:
       - backend
+      - mongo
     networks:
       - fpv-network
 
 networks:
   fpv-network:
     driver: bridge
+
+volumes:
+  mongo-data:
