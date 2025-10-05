@@ -21,5 +21,6 @@ c_assemblies = db["assemblies"]
 c_product_stock = db["product_stock"]
 c_sales = db["sales"]
 c_suppliers = db["suppliers"]
+c_stock_ops = db["stock_ops"]
 
 

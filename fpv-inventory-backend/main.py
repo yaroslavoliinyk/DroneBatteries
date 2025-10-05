@@ -1,6 +1,7 @@
 import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -18,6 +19,7 @@ from db import (
     c_product_stock,
     c_sales,
     c_suppliers,
+    c_stock_ops,
 )
 from bson import ObjectId
 
@@ -42,6 +44,12 @@ client = AsyncIOMotorClient(MONGODB_URI)
 # --------- Helpers ---------
 def now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
+
+def now_kyiv_str() -> str:
+    try:
+        return datetime.now(ZoneInfo("Europe/Kiev")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 def ensure_id(doc: Dict[str, Any]) -> Dict[str, Any]:
     """Use our app-level string id as _id if provided; else generate."""
@@ -86,6 +94,25 @@ async def upsert_inventory(part_type_id: str, add_qty: float, unit_cost: float) 
         {"$set": {"id": part_type_id, "qty": qty1, "avgCost": avg1}},
         upsert=True,
     )
+
+async def log_stock_op(op_type: str, part_type_id: str, qty: float, message: str, meta: Optional[Dict[str, Any]] = None) -> None:
+    pt = await c_part_types.find_one({"_id": part_type_id})
+    cls = await c_part_classes.find_one({"_id": (pt or {}).get("classId")}) if pt else None
+    doc = {
+        "id": str(ObjectId()),
+        "_id": None,
+        "datetimeKyiv": now_kyiv_str(),
+        "type": op_type,  # replenish | writeoff | purchase | assembly_use | sale_consume | status_change
+        "classId": (pt or {}).get("classId"),
+        "className": (cls or {}).get("name"),
+        "partTypeId": part_type_id,
+        "partTypeName": (pt or {}).get("name"),
+        "qty": float(qty),
+        "message": message,
+        "meta": meta or {},
+    }
+    doc["_id"] = doc["id"]
+    await c_stock_ops.insert_one(doc)
 
 async def add_value_to_inventory(part_type_id: str, extra_value: float) -> None:
     """
@@ -426,6 +453,8 @@ async def update_part_type(type_id: str, body: UpdatePartTypeRequest):
     pt = await c_part_types.find_one({"_id": type_id})
     if not pt:
         raise HTTPException(404, "Part type not found")
+    old_running_low = bool(pt.get("runningLow"))
+    old_status = pt.get("stockStatus") or ("low" if old_running_low else "ok")
     patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     # If classId changed, ensure class exists
     new_class_id = patch.get("classId")
@@ -453,6 +482,11 @@ async def update_part_type(type_id: str, body: UpdatePartTypeRequest):
     if not patch:
         return {"ok": True}
     await c_part_types.update_one({"_id": type_id}, {"$set": patch})
+    # log status change if any
+    new_running_low = patch.get("runningLow", old_running_low)
+    new_status = patch.get("stockStatus") or ("low" if new_running_low else "ok")
+    if new_status != old_status:
+        await log_stock_op("status_change", type_id, 0.0, f"Статус: {old_status} → {new_status}")
     return {"ok": True}
 
 
@@ -664,6 +698,8 @@ async def mark_purchase_delivered(purchase_id: str):
         extra_total_for_item = extra_map.get(it["partTypeId"], 0.0)
         effective_unit_cost = unit_cost if qty <= 0 else (unit_cost + (extra_total_for_item / qty))
         await upsert_inventory(it["partTypeId"], qty, effective_unit_cost)
+        # log as purchase add
+        await log_stock_op("purchase", it["partTypeId"], qty, f"Закупка {p.get('vendor') or ''}")
     await c_purchases.update_one({"_id": purchase_id}, {"$set": {"delivered": True}})
     return {"ok": True}
 
@@ -774,6 +810,7 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
                 share_amount = float(req.amount) * base_value
                 # add this value to the respective inventory average cost
                 await add_value_to_inventory(it["partTypeId"], share_amount)
+                await log_stock_op("purchase", it["partTypeId"], 0.0, f"Додаткові витрати: {req.description}")
 
     return {"ok": True, "cost": cost, "newTotal": new_total}
 
@@ -971,6 +1008,39 @@ async def update_supplier(supplier_id: str, body: UpdateSupplierRequest):
     await c_suppliers.update_one({"_id": supplier_id}, {"$set": patch})
     return {"ok": True}
 
+# --------- Manual stock operations ---------
+class ManualStockOpRequest(BaseModel):
+    classId: str
+    partTypeId: str
+    qty: float
+    reason: str
+
+@app.post("/stock/writeoff")
+async def stock_writeoff(req: ManualStockOpRequest):
+    # negative qty
+    if req.qty <= 0:
+        raise HTTPException(400, "qty must be > 0")
+    await upsert_inventory(req.partTypeId, -float(req.qty), 0.0)
+    await log_stock_op("writeoff", req.partTypeId, -float(req.qty), req.reason)
+    return {"ok": True}
+
+@app.post("/stock/replenish")
+async def stock_replenish(req: ManualStockOpRequest):
+    if req.qty <= 0:
+        raise HTTPException(400, "qty must be > 0")
+    # unit_cost unknown for manual replenish → add quantity with current avg
+    cur = await c_inventory.find_one({"_id": req.partTypeId})
+    avg = float(cur.get("avgCost", 0)) if cur else 0.0
+    await upsert_inventory(req.partTypeId, float(req.qty), avg)
+    await log_stock_op("replenish", req.partTypeId, float(req.qty), req.reason)
+    return {"ok": True}
+
+@app.get("/stock/log")
+async def stock_log():
+    docs = [x async for x in c_stock_ops.find().sort([("date", -1), ("_id", -1)])]
+    for d in docs: d.pop("_id", None)
+    return docs
+
 @app.delete("/suppliers/{supplier_id}")
 async def delete_supplier(supplier_id: str):
     s = await c_suppliers.find_one({"_id": supplier_id})
@@ -1003,6 +1073,7 @@ async def assemble(req: AssemblyRequest):
     # Deduct parts
     for b in product["bom"]:
         await upsert_inventory(b["partTypeId"], -float(b["qty"]) * q, 0.0)
+        await log_stock_op("assembly_use", b["partTypeId"], -float(b["qty"]) * q, f"Збірка продукту {product.get('name','')} x{q}")
     # Increase product stock
     await inc_product_stock(req.productId, q)
     # Add assembly record
@@ -1073,6 +1144,7 @@ async def create_sale(req: SaleRequest):
     }
     be["_id"] = be["id"]
     await c_balance.insert_one(be)
+    # Log sale consume (optional, tied to product not parts; you can expand later to BOM consume)
     return {"ok": True, "sale": {k: v for k, v in sale.items() if k != "_id"}}
 
 # Startup: indexes

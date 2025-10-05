@@ -42,6 +42,10 @@ export const api = {
   sale: (o) => http("POST", "/sales", o),
   rebuild: () => http("POST", "/maintenance/rebuild"),
   fixPurchaseTotals: () => http("POST", "/maintenance/fix-purchase-totals"),
+  // Manual stock ops + log
+  writeoff: (o) => http("POST", "/stock/writeoff", o),
+  replenish: (o) => http("POST", "/stock/replenish", o),
+  stockLog: () => http("GET", "/stock/log"),
   // Suppliers
   listSuppliers: () => http("GET", "/suppliers"),
   addSupplier: (o) => http("POST", "/suppliers", o),

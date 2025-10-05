@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil, Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap, Archive } from "lucide-react";
+import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil, Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap, Archive, BookOpen } from "lucide-react";
 import api from "./api";
 
 /**
@@ -2587,10 +2587,139 @@ function InventoryView({ state, dispatch, applyPartialState }) {
   const prodRows = Object.entries(state.productStock).map(([pid, q]) => ({ id: pid, name: state.products.find((p) => p.id === pid)?.name || "?", qty: q }));
 
   const totalValue = rows.reduce((s, r) => s + r.qty * r.avgCost, 0);
+  const [showStockLog, setShowStockLog] = useState(false);
+  const [stockLog, setStockLog] = useState({ columns: [], rows: [] });
+  const [showWriteoff, setShowWriteoff] = useState(false);
+  const [showReplenish, setShowReplenish] = useState(false);
+  const [woClassId, setWoClassId] = useState(state.partClasses[0]?.id || "");
+  const [woPartId, setWoPartId] = useState(state.partTypes.find(t=>t.classId=== (state.partClasses[0]?.id||""))?.id || state.partTypes[0]?.id || "");
+  const [woQty, setWoQty] = useState(0);
+  const [woReason, setWoReason] = useState("");
+  const [rpClassId, setRpClassId] = useState(state.partClasses[0]?.id || "");
+  const [rpPartId, setRpPartId] = useState(state.partTypes.find(t=>t.classId=== (state.partClasses[0]?.id||""))?.id || state.partTypes[0]?.id || "");
+  const [rpQty, setRpQty] = useState(0);
+  const [rpReason, setRpReason] = useState("");
 
   return (
     <div className="grid gap-6">
-      <Section title="Склад деталей" icon={Warehouse} right={<Stat label="Загальна вартість деталей" value={`${currency(totalValue)} ₴`} icon={Warehouse} />}>
+      {!showStockLog && (
+        <div className="flex items-center justify-end">
+          <button
+            className="rounded-xl border border-yellow-400 text-yellow-700 px-3 py-2 text-sm hover:bg-yellow-50 inline-flex items-center gap-2"
+            onClick={async () => {
+              try {
+                const log = await api.stockLog();
+                const rows = (log || []).map((l, i) => ({
+                  id: l.id || i,
+                  datetime: l.datetimeKyiv,
+                  className: l.className || '—',
+                  partName: l.partTypeName || l.partTypeId,
+                  message: l.message || '',
+                }));
+                const columns = [
+                  { key: 'datetime', header: 'Дата і час (Київ)' },
+                  { key: 'className', header: 'Клас' },
+                  { key: 'partName', header: 'Вид деталі' },
+                  { key: 'message', header: 'Дія' },
+                ];
+                setStockLog({ columns, rows });
+                setShowStockLog(true);
+              } catch (e) { alert(String(e)); }
+            }}
+          >
+            <BookOpen className="w-4 h-4" /> Лог операцій
+          </button>
+        </div>
+      )}
+      {showStockLog && (
+        <Section
+          title="Лог операцій зі складом"
+          icon={Warehouse}
+          right={(
+            <button
+              className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+              onClick={()=> setShowStockLog(false)}
+            >Закрити</button>
+          )}
+        >
+          <Table columns={stockLog.columns} rows={stockLog.rows} empty="Лог порожній" />
+        </Section>
+      )}
+      <Section title="Склад деталей" icon={Warehouse} right={(
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-xl border border-gray-300 text-gray-700 px-3 py-2 text-sm hover:bg-gray-100 active:bg-gray-200 transition-colors focus:outline-none focus:ring-0"
+            onClick={()=> { setShowWriteoff(v=>!v); setShowReplenish(false); }}
+          >Списати</button>
+          <button
+            className="rounded-xl bg-gray-900 text-white px-3 py-2 text-sm hover:bg-gray-800 active:bg-gray-700 transition-colors focus:outline-none focus:ring-0"
+            onClick={()=> { setShowReplenish(v=>!v); setShowWriteoff(false); }}
+          >Поповнити</button>
+          <Stat label="Загальна вартість деталей" value={`${currency(totalValue)} ₴`} icon={Warehouse} />
+        </div>
+      )}>
+        {showWriteoff && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm grid md:grid-cols-5 gap-3 items-end">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Клас</div>
+              <Select value={woClassId} onChange={(v)=> { setWoClassId(v); setWoPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
+                {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+              </Select>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
+              <Select value={woPartId} onChange={setWoPartId}>
+                {state.partTypes.filter(t=> !woClassId || t.classId===woClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
+              </Select>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Кількість</div>
+              <NumberInput value={woQty} onChange={setWoQty} min={1} step={1} />
+            </div>
+            <div className="md:col-span-2">
+              <div className="text-xs text-gray-500 mb-1">Причина</div>
+              <TextInput value={woReason} onChange={setWoReason} placeholder="Причина списання" />
+            </div>
+            <div className="md:col-span-5 flex gap-2">
+              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async ()=>{
+                if (!woPartId || !woQty || !woReason.trim()) return;
+                try { await api.writeoff({ classId: woClassId, partTypeId: woPartId, qty: Number(woQty), reason: woReason.trim() }); const s = await api.getState(); applyPartialState({ inventory: s.inventory }); setShowWriteoff(false); setWoQty(0); setWoReason(""); } catch(e){ alert(String(e)); }
+              }}><Save className="w-4 h-4"/> Зберегти</button>
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowWriteoff(false)}>Скасувати</button>
+            </div>
+          </div>
+        )}
+        {showReplenish && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm grid md:grid-cols-5 gap-3 items-end">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Клас</div>
+              <Select value={rpClassId} onChange={(v)=> { setRpClassId(v); setRpPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
+                {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+              </Select>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
+              <Select value={rpPartId} onChange={setRpPartId}>
+                {state.partTypes.filter(t=> !rpClassId || t.classId===rpClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
+              </Select>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Кількість</div>
+              <NumberInput value={rpQty} onChange={setRpQty} min={1} step={1} />
+            </div>
+            <div className="md:col-span-2">
+              <div className="text-xs text-gray-500 mb-1">Причина</div>
+              <TextInput value={rpReason} onChange={setRpReason} placeholder="Причина поповнення" />
+            </div>
+            <div className="md:col-span-5 flex gap-2">
+              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async ()=>{
+                if (!rpPartId || !rpQty || !rpReason.trim()) return;
+                try { await api.replenish({ classId: rpClassId, partTypeId: rpPartId, qty: Number(rpQty), reason: rpReason.trim() }); const s = await api.getState(); applyPartialState({ inventory: s.inventory }); setShowReplenish(false); setRpQty(0); setRpReason(""); } catch(e){ alert(String(e)); }
+              }}><Save className="w-4 h-4"/> Зберегти</button>
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowReplenish(false)}>Скасувати</button>
+            </div>
+          </div>
+        )}
         <Table columns={cols} rows={rows} empty="Порожньо" />
       </Section>
       <Section title="Склад готової продукції" icon={Boxes}>
