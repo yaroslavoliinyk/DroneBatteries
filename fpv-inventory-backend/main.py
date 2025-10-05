@@ -426,15 +426,19 @@ async def set_inventory_filters(body: InventoryFilters):
 
 class BalanceRules(BaseModel):
     allowDelete: bool = False
+    allowAdd: bool = True
 
 @app.get("/settings/balance-rules")
 async def get_balance_rules():
     doc = await settings.find_one({"_id": "balance_rules"})
-    return {"allowDelete": bool((doc or {}).get("allowDelete", False))}
+    return {
+        "allowDelete": bool((doc or {}).get("allowDelete", False)),
+        "allowAdd": bool((doc or {}).get("allowAdd", True)),
+    }
 
 @app.post("/settings/balance-rules")
 async def set_balance_rules(body: BalanceRules):
-    payload = {"_id": "balance_rules", "allowDelete": bool(body.allowDelete)}
+    payload = {"_id": "balance_rules", "allowDelete": bool(body.allowDelete), "allowAdd": bool(body.allowAdd)}
     await settings.update_one({"_id": "balance_rules"}, {"$set": payload}, upsert=True)
     return {"ok": True}
 
@@ -447,6 +451,9 @@ async def list_balance():
 
 @app.post("/balance/entries")
 async def add_balance(entry: BalanceEntry):
+    rules = await settings.find_one({"_id": "balance_rules"})
+    if rules and not bool(rules.get("allowAdd", True)):
+        raise HTTPException(403, "Balance entries cannot be added now")
     doc = ensure_id(entry.model_dump())
     await c_balance.insert_one(doc)
     doc.pop("_id", None)

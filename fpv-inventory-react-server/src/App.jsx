@@ -330,6 +330,26 @@ function Table({ columns, rows, empty = "Немає даних", fixed = false }
     </div>
   );
 }
+
+// Reusable pill-styled select for boolean statuses (green/red)
+function PillSelect({ value, onChange, trueValue = 'true', falseValue = 'false', trueLabel = 'On', falseLabel = 'Off', disabled = false, title = '' }) {
+  const isTrue = value === trueValue;
+  return (
+    <div className="relative">
+      <select
+        className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${isTrue ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'} ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+        value={isTrue ? trueValue : falseValue}
+        onChange={onChange}
+        disabled={disabled}
+        title={title}
+      >
+        <option value={trueValue}>{trueLabel}</option>
+        <option value={falseValue}>{falseLabel}</option>
+      </select>
+      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
+    </div>
+  );
+}
 function Card({ children }) { return <div className="p-4 rounded-2xl shadow bg-white border">{children}</div>; }
 function SectionTitle({ icon: Icon, children }) { return (
   <h2 className="text-xl font-semibold flex items-center gap-2"><Icon className="w-5 h-5" /> {children}</h2>
@@ -435,6 +455,11 @@ function BalanceView({ state, dispatch, balance, applyPartialState }) {
   const [page, setPage] = useState(1);
   const PER_PAGE = 20;
 
+  // Rules for enabling add/delete
+  const [allowDeleteBalance, setAllowDeleteBalance] = useState(false);
+  const [allowAddBalance, setAllowAddBalance] = useState(true);
+  useEffect(() => { api.getBalanceRules().then(r=> { setAllowDeleteBalance(!!r.allowDelete); setAllowAddBalance(r.allowAdd !== false); }).catch(()=>{}); }, []);
+
   const totalPages = Math.max(1, Math.ceil((state.balanceEntries||[]).length / PER_PAGE));
   const pageRows = (state.balanceEntries||[]).slice((page-1)*PER_PAGE, (page-1)*PER_PAGE + PER_PAGE);
 
@@ -454,9 +479,10 @@ function BalanceView({ state, dispatch, balance, applyPartialState }) {
     { key: "actions", header: "—", thClass: "w-20", cell: (r) => (
       <div className="flex items-center gap-2">
         <button
-          className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
-          title="Видалити"
+          className={`p-2 rounded-lg border ${allowDeleteBalance ? 'text-red-700 hover:bg-red-50 border-red-300' : 'text-gray-500 border-gray-300 cursor-not-allowed opacity-60'}`}
+          title={allowDeleteBalance ? 'Видалити' : 'Видалення заборонено у Налаштуваннях'}
           onClick={async()=>{
+            if (!allowDeleteBalance) return;
             if (!confirm('Видалити запис балансу? Дію не можна скасувати.')) return;
             try {
               await api.deleteBalanceEntry(r.id);
@@ -471,6 +497,7 @@ function BalanceView({ state, dispatch, balance, applyPartialState }) {
               }
             }
           }}
+          disabled={!allowDeleteBalance}
         >
           <Trash2 className="w-4 h-4" />
         </button>
@@ -488,12 +515,21 @@ function BalanceView({ state, dispatch, balance, applyPartialState }) {
         <NumberInput value={amount} onChange={setAmount} placeholder="Сума" />
         <TextInput value={note} onChange={setNote} placeholder="Нотатка (необов'язково)" />
         <button
-          className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2"
-          onClick={() => {
+          className={`rounded-xl px-4 py-2 flex items-center justify-center gap-2 ${allowAddBalance ? 'bg-gray-900 text-white hover:bg-gray-800' : 'bg-gray-300 text-gray-600 cursor-not-allowed'}`}
+          onClick={async () => {
+            if (!allowAddBalance) return;
             if (!amount || Number(amount) <= 0) return;
-            dispatch({ type: "ADD_BALANCE_ENTRY", entryType: type, amount: Number(amount), note, tag: type === 'deposit' ? 'Вклад на баланс' : 'Виведення з балансу' });
-            setAmount(0); setNote("");
+            try {
+              await api.addBalanceEntry({ type, amount: Number(amount), note, tag: type === 'deposit' ? 'Вклад на баланс' : 'Виведення з балансу' });
+              const s = await api.getState();
+              applyPartialState({ balanceEntries: s.balanceEntries });
+              setAmount(0); setNote("");
+            } catch (e) {
+              alert(String(e));
+            }
           }}
+          disabled={!allowAddBalance}
+          title={!allowAddBalance ? 'Додавання записів балансу заборонено у Налаштуваннях' : ''}
         >
           <Plus className="w-4 h-4" /> Додати
         </button>
@@ -649,6 +685,17 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
       ) : (
         <span className="inline-flex items-center gap-2">
           {renderClassIcon(r.icon)} {r.name}
+          <button
+            className="ml-2 p-1 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
+            title="Видалити клас"
+            onClick={async (e)=>{
+              e.stopPropagation();
+              if (!confirm('Видалити клас? Якщо є прив\'язані види — видалення неможливе.')) return;
+              try { await dispatch({ type: 'DELETE_PART_CLASS', id: r.id }); } catch(e) { alert(String(e)); }
+            }}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </span>
       )
     ) },
@@ -658,11 +705,17 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
           <>
             <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={async ()=>{
               try {
-                await dispatch({ type: 'UPDATE_PART_CLASS', id: r.id, name: editClassName.trim() || r.name, color: undefined, icon: editClassIcon || undefined });
+                const nextName = (editClassName || '').trim();
+                if (!nextName) { alert('Назва класу не може бути порожньою'); return; }
+                await dispatch({ type: 'UPDATE_PART_CLASS', id: r.id, name: nextName, color: undefined, icon: editClassIcon || undefined });
                 setClassEditingId(null);
               } catch(e) { alert(String(e)); }
             }}>Зберегти</button>
             <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> setClassEditingId(null)}>Скасувати</button>
+            <button className="px-3 py-1 rounded-xl border text-sm text-red-700 hover:bg-red-50 border-red-300" onClick={async ()=>{
+              if (!confirm('Видалити клас? Якщо є прив\'язані види — видалення неможливе.')) return;
+              try { await dispatch({ type: 'DELETE_PART_CLASS', id: r.id }); setClassEditingId(null); } catch(e) { alert(String(e)); }
+            }}>Видалити клас</button>
           </>
         ) : (
           <>
@@ -941,6 +994,13 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
                   setEditClassOpen(false);
                 }}
               >Скасувати</button>
+              <button
+                className="ml-auto rounded-xl border px-4 py-2 text-red-700 hover:bg-red-50 border-red-300"
+                onClick={async ()=>{
+                  if (!confirm('Видалити клас? Якщо є прив\'язані види — видалення неможливе.')) return;
+                  try { await dispatch({ type: 'DELETE_PART_CLASS', id: filterClassId }); setEditClassOpen(false); setFilterClassId(''); } catch(e){ alert(String(e)); }
+                }}
+              >Видалити клас</button>
             </div>
           </div>
         )}
@@ -2835,7 +2895,20 @@ function InventoryView({ state, dispatch, applyPartialState }) {
       );
     } },
     { key: "part", header: "Вид деталі", cell: (r) => (partById(r.partTypeId)?.name || "?") },
-    { key: "qty", header: "Кількість" },
+    { key: "qty", header: "Кількість", cell: (r) => {
+      const part = partById(r.partTypeId);
+      if (!part) return r.qty;
+      if (part.unit !== 'pcs') {
+        const value = (part.stockStatus === 'none') ? 'none' : (part.runningLow ? 'low' : 'ok');
+        const clsByValue = (v) => v==='none' ? 'bg-rose-100 border-rose-300 text-rose-700' : v==='low' ? 'bg-yellow-50 border-yellow-300 text-yellow-800' : 'bg-green-50 border-green-200 text-green-700';
+        return (
+          <span className={`px-2 py-0.5 rounded-full text-xs border ${clsByValue(value)}`}>
+            {value === 'none' ? 'Немає' : value === 'low' ? 'Закінчується' : 'Достатньо'}
+          </span>
+        );
+      }
+      return r.qty;
+    } },
     { key: "avgCost", header: "Сер. собівартість", cell: (r) => currency(r.avgCost) },
     { key: "total", header: "Сума", cell: (r) => currency(r.avgCost * r.qty) },
     { key: "status", header: "Статус", cell: (r) => {
@@ -3590,78 +3663,69 @@ function SalesView({ state, dispatch, applyPartialState }) {
             { key: "afterTax", header: "Після податку (0.94)", cell: (s) => currency(Number(s.total||0)*0.94) },
             { key: "status", header: "Статуси", cell: (r) => (
               <div className="flex items-center gap-2 text-xs">
-                <div className="relative">
-                  <select
-                    className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${r.paid ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}
-                    value={r.paid ? 'paid' : 'unpaid'}
-                    onChange={async(e)=>{
-                      const v = e.target.value;
-                      try {
-                        if (v === 'paid' && !r.paid) {
-                          await api.paySale(r.id);
-                        } else if (v === 'unpaid' && r.paid) {
-                          await api.unpaySale(r.id);
-                        }
-                        const s = await api.getState();
-                        applyPartialState({ sales: s.sales, balanceEntries: s.balanceEntries });
-                      } catch(err){ alert(String(err)); }
-                    }}
-                  >
-                    <option value="paid">Оплачений</option>
-                    <option value="unpaid">Неоплачений</option>
-                  </select>
-                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
-                </div>
-                <div className="relative">
-                  <select
-                    className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${r.allocated ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'}`}
-                    value={r.allocated ? 'allocated' : 'unallocated'}
-                    onChange={async(e)=>{
-                      const v = e.target.value;
-                      try {
-                        if (v === 'allocated' && !r.allocated) {
-                          await api.allocateSale(r.id);
-                        } else if (v === 'unallocated' && r.allocated) {
-                          await api.unallocateSale(r.id);
-                        }
-                        const s = await api.getState();
-                        applyPartialState({ sales: s.sales, productStock: s.productStock });
-                      } catch(err){ alert(String(err)); }
-                    }}
-                  >
-                    <option value="allocated">Взятий зі складу</option>
-                    <option value="unallocated">Не виготовлений</option>
-                  </select>
-                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
-                </div>
-                <div className="relative">
-                  <select
-                    className={`px-2 py-0.5 pr-6 rounded-full border appearance-none ${r.shipped ? 'bg-green-50 border-green-200 text-green-700' : 'bg-red-50 border-red-200 text-red-700'} ${!r.allocated ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    value={r.shipped ? 'shipped' : 'not_shipped'}
-                    disabled={!r.allocated}
-                    title={!r.allocated ? 'Спочатку позначте: Взятий зі складу' : ''}
-                    onChange={async(e)=>{
-                      const v = e.target.value;
-                      try {
-                        if (v === 'shipped' && !r.allocated) {
-                          alert('Спочатку позначте: Взятий зі складу');
-                          return;
-                        }
-                        if (v === 'shipped' && !r.shipped) {
-                          await api.shipSale(r.id);
-                        } else if (v === 'not_shipped' && r.shipped) {
-                          await api.unshipSale(r.id);
-                        }
-                        const s = await api.getState();
-                        applyPartialState({ sales: s.sales });
-                      } catch(err){ alert(String(err)); }
-                    }}
-                  >
-                    <option value="shipped">Відправлений</option>
-                    <option value="not_shipped">Не відправлений</option>
-                  </select>
-                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-gray-500">▾</span>
-                </div>
+                <PillSelect
+                  value={r.paid ? 'paid' : 'unpaid'}
+                  trueValue="paid"
+                  falseValue="unpaid"
+                  trueLabel="Оплачений"
+                  falseLabel="Неоплачений"
+                  onChange={async(e)=>{
+                    const v = e.target.value;
+                    try {
+                      if (v === 'paid' && !r.paid) {
+                        await api.paySale(r.id);
+                      } else if (v === 'unpaid' && r.paid) {
+                        await api.unpaySale(r.id);
+                      }
+                      const s = await api.getState();
+                      applyPartialState({ sales: s.sales, balanceEntries: s.balanceEntries });
+                    } catch(err){ alert(String(err)); }
+                  }}
+                />
+                <PillSelect
+                  value={r.allocated ? 'allocated' : 'unallocated'}
+                  trueValue="allocated"
+                  falseValue="unallocated"
+                  trueLabel="Взятий зі складу"
+                  falseLabel="Не виготовлений"
+                  onChange={async(e)=>{
+                    const v = e.target.value;
+                    try {
+                      if (v === 'allocated' && !r.allocated) {
+                        await api.allocateSale(r.id);
+                      } else if (v === 'unallocated' && r.allocated) {
+                        await api.unallocateSale(r.id);
+                      }
+                      const s = await api.getState();
+                      applyPartialState({ sales: s.sales, productStock: s.productStock });
+                    } catch(err){ alert(String(err)); }
+                  }}
+                />
+                <PillSelect
+                  value={r.shipped ? 'shipped' : 'not_shipped'}
+                  trueValue="shipped"
+                  falseValue="not_shipped"
+                  trueLabel="Відправлений"
+                  falseLabel="Не відправлений"
+                  disabled={!r.allocated}
+                  title={!r.allocated ? 'Спочатку позначте: Взятий зі складу' : ''}
+                  onChange={async(e)=>{
+                    const v = e.target.value;
+                    try {
+                      if (v === 'shipped' && !r.allocated) {
+                        alert('Спочатку позначте: Взятий зі складу');
+                        return;
+                      }
+                      if (v === 'shipped' && !r.shipped) {
+                        await api.shipSale(r.id);
+                      } else if (v === 'not_shipped' && r.shipped) {
+                        await api.unshipSale(r.id);
+                      }
+                      const s = await api.getState();
+                      applyPartialState({ sales: s.sales });
+                    } catch(err){ alert(String(err)); }
+                  }}
+                />
               </div>
             ) },
             { key: 'actions', header: '—', thClass: 'w-40', cell: (r) => (
@@ -3737,12 +3801,20 @@ function SalesView({ state, dispatch, applyPartialState }) {
 
 function SettingsView({ state, dispatch, serverMode }) {
   const [allowDeleteBalance, setAllowDeleteBalance] = useState(false);
-  useEffect(() => { api.getBalanceRules().then(r=> setAllowDeleteBalance(!!r.allowDelete)).catch(()=>{}); }, []);
+  const [allowAddBalance, setAllowAddBalance] = useState(true);
+  useEffect(() => { api.getBalanceRules().then(r=> { setAllowDeleteBalance(!!r.allowDelete); setAllowAddBalance(r.allowAdd !== false); }).catch(()=>{}); }, []);
   async function toggleAllowDeleteBalance() {
     try {
       const next = !allowDeleteBalance;
-      await api.setBalanceRules({ allowDelete: next });
+      await api.setBalanceRules({ allowDelete: next, allowAdd: allowAddBalance });
       setAllowDeleteBalance(next);
+    } catch(e){ alert(String(e)); }
+  }
+  async function toggleAllowAddBalance() {
+    try {
+      const next = !allowAddBalance;
+      await api.setBalanceRules({ allowDelete: allowDeleteBalance, allowAdd: next });
+      setAllowAddBalance(next);
     } catch(e){ alert(String(e)); }
   }
   async function exportJSON() {
@@ -3808,6 +3880,10 @@ function SettingsView({ state, dispatch, serverMode }) {
         <label className="ml-auto inline-flex items-center gap-2 text-sm border rounded-xl px-3 py-2">
           <input type="checkbox" className="scale-110" checked={allowDeleteBalance} onChange={toggleAllowDeleteBalance} />
           Дозволити видалення записів балансу
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm border rounded-xl px-3 py-2">
+          <input type="checkbox" className="scale-110" checked={allowAddBalance} onChange={toggleAllowAddBalance} />
+          Дозволити додавання записів балансу
         </label>
       </div>
       <div className="text-sm text-gray-500">
