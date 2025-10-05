@@ -40,6 +40,18 @@ export const api = {
   deleteProduct: (id) => http("DELETE", `/products/${id}`),
   assemble: (o) => http("POST", "/assembly", o),
   sale: (o) => http("POST", "/sales", o),
+  paySale: (id) => http("POST", `/sales/${id}/pay`),
+  unpaySale: (id) => http("POST", `/sales/${id}/unpay`),
+  allocateSale: (id) => http("POST", `/sales/${id}/allocate`),
+  unallocateSale: (id) => http("POST", `/sales/${id}/unallocate`),
+  shipSale: (id) => http("POST", `/sales/${id}/ship`),
+  unshipSale: (id) => http("POST", `/sales/${id}/unship`),
+  completeSale: (id) => http("POST", `/sales/${id}/complete`),
+  uncompleteSale: (id) => http("POST", `/sales/${id}/uncomplete`),
+  listArchivedSales: () => http("GET", "/sales/archived"),
+  setSaleArchived: (id, archived) => http("POST", `/sales/${id}/archive`, { archived }),
+  updateSale: (id, o) => http("PUT", `/sales/${id}`, o),
+  deleteSale: (id) => http("DELETE", `/sales/${id}`),
   rebuild: () => http("POST", "/maintenance/rebuild"),
   fixPurchaseTotals: () => http("POST", "/maintenance/fix-purchase-totals"),
   // Manual stock ops + log
@@ -51,6 +63,15 @@ export const api = {
   addSupplier: (o) => http("POST", "/suppliers", o),
   updateSupplier: (id, o) => http("PUT", `/suppliers/${id}`, o),
   deleteSupplier: (id) => http("DELETE", `/suppliers/${id}`),
+  // Settings
+  getInventoryFilters: () => http("GET", "/settings/inventory-filters"),
+  setInventoryFilters: (o) => http("POST", "/settings/inventory-filters", o),
+  // Customers
+  listCustomers: () => http("GET", "/customers"),
+  addCustomer: (o) => http("POST", "/customers", o),
+  updateCustomer: (id, o) => http("PUT", `/customers/${id}`, o),
+  deleteCustomer: (id) => http("DELETE", `/customers/${id}`),
+  customersSummary: () => http("GET", "/customers/summary"),
 };
 
 export default api;

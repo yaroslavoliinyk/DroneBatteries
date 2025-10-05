@@ -20,6 +20,8 @@ from db import (
     c_sales,
     c_suppliers,
     c_stock_ops,
+    settings,
+    customers,
 )
 from bson import ObjectId
 
@@ -200,7 +202,7 @@ async def get_state() -> Dict[str, Any]:
     products = [x async for x in c_products.find().sort("name", 1)]
     assemblies = [x async for x in c_assemblies.find().sort("date", -1)]
     product_stock = {doc["id"]: doc.get("qty", 0) async for doc in c_product_stock.find()}
-    sales = [x async for x in c_sales.find().sort("date", -1)]
+    sales = [x async for x in c_sales.find({"archived": {"$ne": True}}).sort("date", -1)]
     suppliers = [x async for x in c_suppliers.find().sort("name", 1)]
     # Remove Mongo _id
     for arr in [balance_entries, part_classes, part_types, purchases, products, assemblies, sales, suppliers]:
@@ -317,10 +319,110 @@ class Sale(BaseModel):
     customer: Optional[str] = ""
     note: Optional[str] = ""
 
+class Customer(BaseModel):
+    id: Optional[str] = None
+    numericId: Optional[int] = None
+    name: str
+    contacts: Optional[str] = ""
+
+class InventoryFilters(BaseModel):
+    productIds: Optional[List[str]] = []
+    classIds: Optional[List[str]] = []
+    typeIds: Optional[List[str]] = []
+
 # --------- Routes ---------
 @app.get("/state")
 async def read_state():
     return await get_state()
+# --------- Customers ---------
+@app.get("/customers")
+async def list_customers():
+    docs = [x async for x in customers.find().sort("numericId", 1)]
+    for d in docs:
+        d.pop("_id", None)
+    return docs
+
+@app.post("/customers")
+async def add_customer(body: Customer):
+    # auto-increment numericId
+    last = await customers.find_one(sort=[("numericId", -1)])
+    next_num = int((last or {}).get("numericId", 0)) + 1
+    doc = {
+        "id": str(ObjectId()),
+        "_id": None,
+        "numericId": next_num,
+        "name": body.name,
+        "contacts": body.contacts or "",
+    }
+    doc["_id"] = doc["id"]
+    await customers.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@app.put("/customers/{cid}")
+async def update_customer(cid: str, body: Customer):
+    patch = {}
+    if body.name is not None:
+        patch["name"] = body.name
+    if body.contacts is not None:
+        patch["contacts"] = body.contacts
+    if not patch:
+        return {"ok": True}
+    await customers.update_one({"_id": cid}, {"$set": patch})
+    return {"ok": True}
+
+@app.delete("/customers/{cid}")
+async def delete_customer(cid: str):
+    await customers.delete_one({"_id": cid})
+    return {"ok": True}
+
+@app.get("/customers/summary")
+async def customers_summary():
+    # Aggregate sales by customer
+    pipeline = [
+        {"$group": {"_id": "$customer", "totalQty": {"$sum": "$qty"}, "totalAmount": {"$sum": "$total"}, "products": {"$push": {"productId": "$productId", "qty": "$qty"}}}},
+    ]
+    data = []
+    async for row in db["sales"].aggregate(pipeline):
+        name = row.get("_id") or ""
+        # Build product counts by productId
+        prod_counts = {}
+        for p in row.get("products", []) or []:
+            pid = p.get("productId")
+            q = int(p.get("qty", 0))
+            if pid:
+                prod_counts[pid] = prod_counts.get(pid, 0) + q
+        # Map to list with product names
+        items = []
+        for pid, q in prod_counts.items():
+            prod = await c_products.find_one({"_id": pid})
+            items.append({"productId": pid, "productName": (prod or {}).get("name") or pid, "qty": q})
+        data.append({
+            "customer": name,
+            "items": items,
+            "totalQty": int(row.get("totalQty", 0)),
+            "totalAmount": float(row.get("totalAmount", 0)),
+        })
+    return data
+
+# --------- Settings (persist UI preferences) ---------
+@app.get("/settings/inventory-filters")
+async def get_inventory_filters():
+    doc = await settings.find_one({"_id": "inventory_filters"})
+    if not doc:
+        return {"productIds": [], "classIds": [], "typeIds": []}
+    return {"productIds": doc.get("productIds", []), "classIds": doc.get("classIds", []), "typeIds": doc.get("typeIds", [])}
+
+@app.post("/settings/inventory-filters")
+async def set_inventory_filters(body: InventoryFilters):
+    payload = {
+        "_id": "inventory_filters",
+        "productIds": list(dict.fromkeys(body.productIds or [])),
+        "classIds": list(dict.fromkeys(body.classIds or [])),
+        "typeIds": list(dict.fromkeys(body.typeIds or [])),
+    }
+    await settings.update_one({"_id": "inventory_filters"}, {"$set": payload}, upsert=True)
+    return {"ok": True}
 
 # Balance
 @app.get("/balance/entries")
@@ -1037,7 +1139,8 @@ async def stock_replenish(req: ManualStockOpRequest):
 
 @app.get("/stock/log")
 async def stock_log():
-    docs = [x async for x in c_stock_ops.find().sort([("date", -1), ("_id", -1)])]
+    # Sort oldest → newest so остання операція внизу
+    docs = [x async for x in c_stock_ops.find().sort([("_id", 1)])]
     for d in docs: d.pop("_id", None)
     return docs
 
@@ -1098,7 +1201,7 @@ async def list_product_stock():
 # Sales
 @app.get("/sales")
 async def list_sales():
-    docs = [x async for x in c_sales.find().sort("date", -1)]
+    docs = [x async for x in c_sales.find({"archived": {"$ne": True}}).sort("date", -1)]
     for d in docs: d.pop("_id", None)
     return docs
 
@@ -1112,12 +1215,6 @@ class SaleRequest(BaseModel):
 
 @app.post("/sales")
 async def create_sale(req: SaleRequest):
-    stock = await c_product_stock.find_one({"_id": req.productId})
-    have = int(stock.get("qty", 0)) if stock else 0
-    if have < req.qty:
-        raise HTTPException(400, f"Недостатньо готової продукції: потрібно {req.qty}, є {have}")
-    # decrement stock
-    await inc_product_stock(req.productId, -int(req.qty))
     total = float(req.qty) * float(req.pricePerUnit)
     sale = {
         "id": str(ObjectId()),
@@ -1129,23 +1226,165 @@ async def create_sale(req: SaleRequest):
         "total": total,
         "customer": req.customer or "",
         "note": req.note or "",
+        # order lifecycle flags
+        "paid": False,
+        "allocated": False,  # products deducted from stock
+        "shipped": False,
+        "completed": False,
+        "archived": False,
     }
     sale["_id"] = sale["id"]
     await c_sales.insert_one(sale)
-    # balance entry
+    return {"ok": True, "sale": {k: v for k, v in sale.items() if k != "_id"}}
+
+class PaySaleBody(BaseModel):
+    pass
+
+@app.post("/sales/{sale_id}/pay")
+async def pay_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    if s.get("paid"):
+        return {"ok": True, "already": True}
+    net_amount = float(s.get("total", 0)) * 0.94
     be = {
         "id": str(ObjectId()),
         "_id": None,
-        "date": sale["date"],
+        "date": s.get("date") or now_iso(),
         "type": "sale",
-        "amount": total,
-        "note": f"Продаж {req.qty} шт.",
+        "amount": net_amount,
+        "note": f"Оплата продажу після податку (0.94) — {s.get('customer') or ''}",
         "tag": "Продаж",
     }
     be["_id"] = be["id"]
     await c_balance.insert_one(be)
-    # Log sale consume (optional, tied to product not parts; you can expand later to BOM consume)
-    return {"ok": True, "sale": {k: v for k, v in sale.items() if k != "_id"}}
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"paid": True}})
+    return {"ok": True}
+
+@app.post("/sales/{sale_id}/allocate")
+async def allocate_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    if s.get("allocated"):
+        return {"ok": True, "already": True}
+    pid = s.get("productId")
+    q = int(s.get("qty", 0))
+    stock = await c_product_stock.find_one({"_id": pid})
+    have = int(stock.get("qty", 0)) if stock else 0
+    if have < q:
+        raise HTTPException(400, "Недостатньо готової продукції на складі для додавання до замовлення")
+    await inc_product_stock(pid, -q)
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"allocated": True}})
+    return {"ok": True}
+
+@app.post("/sales/{sale_id}/ship")
+async def ship_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"shipped": True}})
+    return {"ok": True}
+
+@app.post("/sales/{sale_id}/complete")
+async def complete_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"completed": True}})
+    return {"ok": True}
+
+# ----- toggle OFF endpoints -----
+@app.post("/sales/{sale_id}/unpay")
+async def unpay_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"paid": False}})
+    return {"ok": True}
+
+@app.post("/sales/{sale_id}/unallocate")
+async def unallocate_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    if not s.get("allocated"):
+        return {"ok": True, "already": True}
+    pid = s.get("productId")
+    q = int(s.get("qty", 0))
+    # return stock back
+    await inc_product_stock(pid, q)
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"allocated": False}})
+    return {"ok": True}
+
+@app.get("/sales/archived")
+async def list_archived_sales():
+    docs = [x async for x in c_sales.find({"archived": True}).sort("date", -1)]
+    for d in docs: d.pop("_id", None)
+    return docs
+
+class ArchiveSaleBody(BaseModel):
+    archived: bool
+
+@app.post("/sales/{sale_id}/archive")
+async def archive_sale(sale_id: str, body: ArchiveSaleBody):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"archived": bool(body.archived)}})
+    return {"ok": True, "archived": bool(body.archived)}
+
+@app.post("/sales/{sale_id}/unship")
+async def unship_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"shipped": False}})
+    return {"ok": True}
+
+@app.post("/sales/{sale_id}/uncomplete")
+async def uncomplete_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    await c_sales.update_one({"_id": sale_id}, {"$set": {"completed": False}})
+    return {"ok": True}
+
+# ----- edit/delete -----
+class UpdateSaleBody(BaseModel):
+    productId: Optional[str] = None
+    qty: Optional[int] = None
+    pricePerUnit: Optional[float] = None
+    date: Optional[str] = None
+    customer: Optional[str] = None
+    note: Optional[str] = None
+
+@app.put("/sales/{sale_id}")
+async def update_sale(sale_id: str, body: UpdateSaleBody):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    if s.get("allocated"):
+        raise HTTPException(400, "Неможливо редагувати: замовлення додане до замовлення (спробуйте спочатку прибрати)")
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not patch:
+        return {"ok": True}
+    new_qty = int(patch.get("qty", s.get("qty", 0)))
+    new_price = float(patch.get("pricePerUnit", s.get("pricePerUnit", 0)))
+    patch["total"] = float(new_qty) * float(new_price)
+    await c_sales.update_one({"_id": sale_id}, {"$set": patch})
+    return {"ok": True}
+
+@app.delete("/sales/{sale_id}")
+async def delete_sale(sale_id: str):
+    s = await c_sales.find_one({"_id": sale_id})
+    if not s:
+        raise HTTPException(404, "Sale not found")
+    if s.get("allocated"):
+        raise HTTPException(400, "Неможливо видалити: спочатку приберіть зі замовлення (поверніть зі складу)")
+    await c_sales.delete_one({"_id": sale_id})
+    return {"ok": True}
 
 # Startup: indexes
 @app.on_event("startup")

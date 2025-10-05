@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Package, Boxes, ShoppingCart, Wrench, BatteryFull, Factory, Warehouse, Coins, DollarSign, Plus, Trash2, Save, Upload, Download, Settings, Info, Filter, UserCog, UserRound, RotateCcw, Pencil, Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap, Archive, BookOpen } from "lucide-react";
 import api from "./api";
 
@@ -234,6 +234,7 @@ export default function App() {
               <TabBtn icon={DollarSign} id="sales" tab={tab} setTab={setTab}>Продажі</TabBtn>
               <div className="h-[2px] bg-gray-200 my-2 rounded" />
               <TabBtn icon={Package} id="suppliers" tab={tab} setTab={setTab}>Постачальники</TabBtn>
+              <TabBtn icon={UserRound} id="customers" tab={tab} setTab={setTab}>Клієнти</TabBtn>
             </div>
           </aside>
         )}
@@ -252,6 +253,7 @@ export default function App() {
         {tab === "balance" && <BalanceView state={state} dispatch={dispatch} balance={balance} />}
         {tab === "parts" && <PartsView state={state} dispatch={dispatch} applyPartialState={applyPartialState} onOpenSupplier={(id)=>{ setTab('suppliers'); setFocusSupplierId(id); }} />}
         {tab === "suppliers" && <SuppliersView state={state} refresh={refresh} applyPartialState={applyPartialState} focusSupplierId={focusSupplierId} clearFocus={()=> setFocusSupplierId(null)} />}
+        {tab === "customers" && <CustomersView state={state} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "purchases" && <PurchasesView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
         {tab === "inventory" && <InventoryView state={state} dispatch={dispatch} applyPartialState={applyPartialState} />}
         {tab === "products" && <ProductsView state={state} dispatch={dispatch} refresh={refresh} applyPartialState={applyPartialState} />}
@@ -337,6 +339,87 @@ function NumberInput({ value, onChange, min = 0, step = "any", placeholder, clas
 }
 function TextInput({ value, onChange, placeholder, className }) { return <input className={`${className || 'w-full'} border rounded-xl px-3 py-2`} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />; }
 function Select({ value, onChange, children }) { return (<select className="w-full border rounded-xl px-3 py-2 bg-white" value={value} onChange={(e) => onChange(e.target.value)}>{children}</select>); }
+
+// Click-outside-aware dropdown with multi-select checkboxes
+function DropdownMulti({ label, items, selected, onToggle, onClear }) {
+  const ref = useRef(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    function onDocClick(e) {
+      if (!ref.current) return;
+      if (!ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('touchstart', onDocClick, { passive: true });
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('touchstart', onDocClick);
+    };
+  }, []);
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" className="w-full border rounded-xl px-3 py-2 bg-white flex items-center justify-between gap-2" onClick={()=> setOpen(o=>!o)}>
+        <span>{label}</span>
+        <span className="text-gray-400">▼</span>
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-auto border bg-white rounded-xl shadow">
+          <div className="p-2">
+            <label className="flex items-center gap-2 text-sm px-2 py-1 hover:bg-gray-50 rounded">
+              <input type="checkbox" className="scale-110" checked={(selected||[]).length === 0} onChange={onClear} />
+              Всі
+            </label>
+            {items.map(it => (
+              <label key={it.id} className="flex items-center gap-2 text-sm px-2 py-1 hover:bg-gray-50 rounded">
+                <input
+                  type="checkbox"
+                  className="scale-110"
+                  checked={(selected||[]).includes(it.id)}
+                  onChange={(e)=> onToggle(it.id, e.target.checked)}
+                />
+                {it.name}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrdersTable({ state }) {
+  const [sales, setSales] = useState([]);
+  useEffect(() => { (async ()=>{ try { const s = await api.listPurchases(); } catch(_){} })(); }, []); // noop to keep pattern
+  useEffect(() => { api.getState().then(s=> setSales(s.sales||[])).catch(()=> setSales([])); }, []);
+
+  const openOrders = (sales||[]).filter(s => !s.allocated);
+  const cols = [
+    { key: 'date', header: 'Дата' },
+    { key: 'product', header: 'Продукт', cell: (r)=> state.products.find(p=>p.id===r.productId)?.name || r.productId },
+    { key: 'qty', header: 'К-сть' },
+    { key: 'price', header: 'Ціна за од.', cell: (r)=> currency(r.pricePerUnit) },
+    { key: 'total', header: 'Сума', cell: (r)=> <b>{currency(r.total)}</b> },
+    { key: 'afterTax', header: 'Після податку (0.94)', cell: (r)=> currency(Number(r.total||0)*0.94) },
+    { key: 'status', header: 'Статуси', cell: (r)=> (
+      <div className="flex items-center gap-2 text-xs">
+        {r.paid ? <span className="px-2 py-0.5 rounded-full bg-green-50 border border-green-200 text-green-700">Оплачений</span> : <button className="px-2 py-0.5 rounded-full border hover:bg-gray-50" onClick={async()=>{ try{ await api.paySale(r.id); const s = await api.getState(); setSales(s.sales||[]);}catch(e){alert(String(e));}}}>Оплатити</button>}
+        {r.allocated ? <span className="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700">Доданий до замовлення</span> : (
+          <button className="px-2 py-0.5 rounded-full border hover:bg-gray-50" onClick={async()=>{
+            try {
+              await api.allocateSale(r.id);
+              const s = await api.getState();
+              setSales(s.sales||[]);
+            } catch(e){ alert(String(e)); }
+          }}>Додати продукти до замовлення</button>
+        )}
+        {r.shipped ? <span className="px-2 py-0.5 rounded-full bg-purple-50 border border-purple-200 text-purple-700">Відправлений</span> : <button className="px-2 py-0.5 rounded-full border hover:bg-gray-50" onClick={async()=>{ try{ await api.shipSale(r.id); const s = await api.getState(); setSales(s.sales||[]);}catch(e){alert(String(e));}}}>Відправлено</button>}
+        {r.completed ? <span className="px-2 py-0.5 rounded-full bg-gray-900 text-white">Виконано</span> : <button className="px-2 py-0.5 rounded-full border hover:bg-gray-50" onClick={async()=>{ try{ await api.completeSale(r.id); const s = await api.getState(); setSales(s.sales||[]);}catch(e){alert(String(e));}}}>Завершити</button>}
+      </div>
+    )},
+  ];
+
+  return <Table columns={cols} rows={openOrders} empty="Замовлень немає" />;
+}
 
 // ---------------------- Views (same UI, calls dispatch) ----------------------
 function BalanceView({ state, dispatch, balance }) {
@@ -570,6 +653,38 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
         )}
       </div>
     ) },
+            { key: 'actions', header: 'Дії', thClass: 'w-[16rem]', cell: (r) => (
+              <div className="flex items-center gap-2">
+                <button
+                  className="p-2 rounded-lg border hover:bg-gray-50"
+                  title="Редагувати"
+                  onClick={()=>{
+                    const newQty = prompt('К-сть', String(r.qty));
+                    if (newQty === null) return;
+                    const newPrice = prompt('Ціна за од.', String(r.pricePerUnit));
+                    if (newPrice === null) return;
+                    api.updateSale(r.id, { qty: Number(newQty), pricePerUnit: Number(newPrice) })
+                      .then(async()=>{ const s = await api.getState(); applyPartialState({ sales: s.sales }); })
+                      .catch(e=> alert(String(e)));
+                  }}
+                >Редагувати</button>
+                <button
+                  className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
+                  title="Видалити"
+                  onClick={async()=>{
+                    if (!confirm('Видалити замовлення? Дію не можна скасувати.')) return;
+                    try { await api.deleteSale(r.id); const s = await api.getState(); applyPartialState({ sales: s.sales }); } catch(e){ alert(String(e)); }
+                  }}
+                >Видалити</button>
+                <button
+                  className={`p-2 rounded-lg border ${r.archived ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-orange-50 border-orange-300 text-orange-700'}`}
+                  title={r.archived ? 'Розархівувати' : 'Архівувати'}
+                  onClick={async()=>{
+                    try { await api.setSaleArchived(r.id, !r.archived); const s = await api.getState(); applyPartialState({ sales: s.sales }); } catch(e){ alert(String(e)); }
+                  }}
+                >{r.archived ? 'Розархівувати' : 'Архівувати'}</button>
+              </div>
+            )},
   ];
 
   // Inline edit for types
@@ -1438,6 +1553,116 @@ function SuppliersView({ state, refresh, applyPartialState, focusSupplierId, cle
   );
 }
 
+function CustomersView({ state, refresh, applyPartialState }) {
+  const [name, setName] = useState("");
+  const [contacts, setContacts] = useState("");
+  const [rows, setRows] = useState([]);
+  const [summary, setSummary] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editContacts, setEditContacts] = useState("");
+
+  async function load() {
+    setLoading(true);
+    try {
+      const [list, sum] = await Promise.all([api.listCustomers(), api.customersSummary()]);
+      setRows(list);
+      setSummary(sum);
+    } catch (_) {}
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  async function add() {
+    if (!name.trim()) return;
+    try {
+      const c = await api.addCustomer({ name: name.trim(), contacts: contacts.trim() });
+      setName(""); setContacts("");
+      await load();
+    } catch (e) { alert(String(e)); }
+  }
+
+  async function update(c) {
+    try {
+      await api.updateCustomer(c.id, { name: editName, contacts: editContacts });
+      setEditingId(null);
+      await load();
+    } catch(e){ alert(String(e)); }
+  }
+  async function remove(id) {
+    if (!confirm('Видалити клієнта?')) return;
+    try { await api.deleteCustomer(id); await load(); } catch(e){ alert(String(e)); }
+  }
+
+  // Customers page shows only sales results; adding purchases moved to Sales page
+
+  const cols = [
+    { key: 'numericId', header: 'ID', thClass: 'w-16', cell: (r)=> r.numericId },
+    { key: 'name', header: "Ім'я клієнта", cell: (r)=> (
+      editingId === r.id
+        ? (<TextInput value={editName} onChange={setEditName} placeholder="Ім'я" />)
+        : (r.name)
+    )},
+    { key: 'contacts', header: 'Контакти', cell: (r)=> (
+      editingId === r.id
+        ? (<TextInput value={editContacts} onChange={setEditContacts} placeholder="Контакти" />)
+        : (r.contacts || '')
+    )},
+    { key: 'purchases', header: 'Куплені продукти', cell: (r)=> {
+      const s = summary.find(x=> (x.customer||'').trim() === (r.name||'').trim());
+      if (!s) return '—';
+      return (
+        <div className="text-xs text-gray-700 space-y-1">
+          {s.items.map(it => (
+            <div key={it.productId}>• {it.productName}: {it.qty}</div>
+          ))}
+        </div>
+      );
+    }},
+    { key: 'total', header: 'Загальна сума', cell: (r)=> {
+      const s = summary.find(x=> (x.customer||'').trim() === (r.name||'').trim());
+      return <b>{currency(s?.totalAmount || 0)}</b>;
+    }},
+    { key: 'actions', header: '—', thClass: 'w-40', cell: (r)=> (
+      <div className="flex items-center gap-2">
+        {editingId === r.id ? (
+          <>
+            <button className="px-3 py-1 rounded-xl border text-sm bg-gray-900 text-white" onClick={()=> update(r)}>Зберегти</button>
+            <button className="px-3 py-1 rounded-xl border text-sm hover:bg-gray-50" onClick={()=> { setEditingId(null); setEditName(""); setEditContacts(""); }}>Скасувати</button>
+          </>
+        ) : (
+          <>
+            <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> { setEditingId(r.id); setEditName(r.name||''); setEditContacts(r.contacts||''); }}><Pencil className="w-4 h-4"/></button>
+            <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={()=> remove(r.id)}><Trash2 className="w-4 h-4"/></button>
+          </>
+        )}
+      </div>
+    )},
+  ];
+
+  return (
+    <div className="space-y-6">
+      <Section title="Клієнти" icon={UserRound} right={null}>
+        <div className="grid md:grid-cols-3 gap-3 items-end">
+          <TextInput value={name} onChange={setName} placeholder="Ім'я клієнта" />
+          <TextInput value={contacts} onChange={setContacts} placeholder="Контакти" />
+          <button className="rounded-xl bg-gray-900 text-white px-4 py-2 flex items-center justify-center gap-2" onClick={add}><Save className="w-4 h-4"/> Додати клієнта</button>
+        </div>
+        <div className="text-xs text-gray-500 mt-1">ID призначається автоматично.</div>
+      </Section>
+
+      <Section title="Список клієнтів" icon={UserRound}>
+        {loading ? (<div className="p-4">Завантаження…</div>) : (
+          <Table columns={cols} rows={rows} empty="Клієнтів ще немає" />
+        )}
+      </Section>
+
+      {/* Клієнти: тільки довідник та результати продажів; без додавання покупок */}
+    </div>
+  );
+}
+
 function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   const [vendorId, setVendorId] = useState("");
   const [date, setDate] = useState(todayISO());
@@ -1470,6 +1695,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }
   // Filters & sorting
   const [deliveryFilter, setDeliveryFilter] = useState("all"); // all | delivered | not_delivered
+  const [paymentFilter, setPaymentFilter] = useState("all");   // all | paid | not_paid
 
   const [serviceFilter, setServiceFilter] = useState("all");   // all | services | goods
   const [classFilter, setClassFilter] = useState("");          // classId | ""
@@ -1559,6 +1785,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
 
       if (serviceFilter === "services" && !r.isService) return false;
       if (serviceFilter === "goods" && r.isService) return false;
+      if (paymentFilter === "paid" && !r.paidFromBalance) return false;
+      if (paymentFilter === "not_paid" && !!r.paidFromBalance) return false;
       return true;
     });
 
@@ -1617,6 +1845,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     const chips = [];
     if (deliveryFilter === "delivered") chips.push("Доставлені");
     if (deliveryFilter === "not_delivered") chips.push("В дорозі");
+    if (paymentFilter === "paid") chips.push("Оплачені");
+    if (paymentFilter === "not_paid") chips.push("Не оплачені");
 
     if (serviceFilter === "services") chips.push("Послуги");
     if (serviceFilter === "goods") chips.push("Товари");
@@ -1634,20 +1864,20 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     if (minTotal !== "") chips.push(`Сума ≥ ${Number(minTotal).toFixed(2)}`);
     if (maxTotal !== "") chips.push(`Сума ≤ ${Number(maxTotal).toFixed(2)}`);
     return chips;
-  }, [deliveryFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, state.partClasses, state.partTypes]);
+  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, state.partClasses, state.partTypes]);
   const activeFiltersCount = activeFilters.length;
 
   // Reset page to 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [deliveryFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
+  }, [deliveryFilter, paymentFilter, serviceFilter, classFilter, typeFilter, dateFrom, dateTo, vendorQuery, minTotal, maxTotal, sortBy, sortDir]);
 
   // URL sync (read on mount)
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const get = (k, def) => params.get(k) ?? def;
     setDeliveryFilter(get('df', 'all'));
-
+    setPaymentFilter(get('pf', 'all'));
     setServiceFilter(get('sf', 'all'));
     setClassFilter(get('cf', ''));
     setTypeFilter(get('tf', ''));
@@ -1659,7 +1889,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     setMinTotal(get('min', ''));
     setMaxTotal(get('max', ''));
     setPage(Number(get('p', '1')) || 1);
-    const any = ['df','sf','cf','tf','from','to','sb','sd','vq','min','max'].some(k => params.get(k));
+    const any = ['df','pf','sf','cf','tf','from','to','sb','sd','vq','min','max'].some(k => params.get(k));
     if (any) setShowFilters(true);
   }, []);
 
@@ -1670,7 +1900,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
       if (v === undefined || v === null || v === '' || v === def) params.delete(k); else params.set(k, String(v));
     };
     setParam('df', deliveryFilter, 'all');
-
+    setParam('pf', paymentFilter, 'all');
     setParam('sf', serviceFilter, 'all');
     setParam('cf', classFilter, '');
     setParam('tf', typeFilter, '');
@@ -2507,6 +2737,47 @@ function InventoryView({ state, dispatch, applyPartialState }) {
     };
   });
 
+  // Inventory filters (persisted)
+  const [selProductIds, setSelProductIds] = useState([]);
+  const [selClassIds, setSelClassIds] = useState([]);
+  const [selTypeIds, setSelTypeIds] = useState([]);
+
+  // Load presets from server on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await api.getInventoryFilters();
+        setSelProductIds(Array.isArray(saved.productIds) ? saved.productIds : []);
+        setSelClassIds(Array.isArray(saved.classIds) ? saved.classIds : []);
+        setSelTypeIds(Array.isArray(saved.typeIds) ? saved.typeIds : []);
+      } catch(_) {}
+    })();
+  }, []);
+
+  // Persist to server on change
+  useEffect(() => {
+    (async () => { try { await api.setInventoryFilters({ productIds: selProductIds, classIds: selClassIds, typeIds: selTypeIds }); } catch(_){} })();
+  }, [selProductIds, selClassIds, selTypeIds]);
+
+  const productTypeIdSet = React.useMemo(() => {
+    if (!selProductIds || selProductIds.length === 0) return null;
+    const set = new Set();
+    (state.products || []).forEach(p => {
+      if (selProductIds.includes(p.id)) {
+        (p.bom || []).forEach(b => { if (b.partTypeId) set.add(b.partTypeId); });
+      }
+    });
+    return set;
+  }, [selProductIds, state.products]);
+
+  const filteredRows = React.useMemo(() => {
+    let r = rows;
+    if (productTypeIdSet) r = r.filter(x => productTypeIdSet.has(x.partTypeId));
+    if (selClassIds.length > 0) r = r.filter(x => selClassIds.includes(x.classId));
+    if (selTypeIds.length > 0) r = r.filter(x => selTypeIds.includes(x.partTypeId));
+    return r;
+  }, [rows, productTypeIdSet, selClassIds, selTypeIds]);
+
   // Small icon registry for classes
   const ICONS = {
     Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
@@ -2586,7 +2857,7 @@ function InventoryView({ state, dispatch, applyPartialState }) {
   ];
   const prodRows = Object.entries(state.productStock).map(([pid, q]) => ({ id: pid, name: state.products.find((p) => p.id === pid)?.name || "?", qty: q }));
 
-  const totalValue = rows.reduce((s, r) => s + r.qty * r.avgCost, 0);
+  const totalValue = filteredRows.reduce((s, r) => s + r.qty * r.avgCost, 0);
   const [showStockLog, setShowStockLog] = useState(false);
   const [stockLog, setStockLog] = useState({ columns: [], rows: [] });
   const [showWriteoff, setShowWriteoff] = useState(false);
@@ -2609,12 +2880,13 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             onClick={async () => {
               try {
                 const log = await api.stockLog();
+                const typeName = (t) => t === 'replenish' ? 'Поповнення' : t === 'writeoff' ? 'Списання' : t === 'purchase' ? 'Закупка' : t === 'assembly_use' ? 'Збірка' : t === 'status_change' ? 'Статус' : (t || '—');
                 const rows = (log || []).map((l, i) => ({
                   id: l.id || i,
                   datetime: l.datetimeKyiv,
                   className: l.className || '—',
                   partName: l.partTypeName || l.partTypeId,
-                  message: l.message || '',
+                  message: `${typeName(l.type)}${l.message ? ` → ${l.message}` : ''}`,
                 }));
                 const columns = [
                   { key: 'datetime', header: 'Дата і час (Київ)' },
@@ -2658,6 +2930,61 @@ function InventoryView({ state, dispatch, applyPartialState }) {
           <Stat label="Загальна вартість деталей" value={`${currency(totalValue)} ₴`} icon={Warehouse} />
         </div>
       )}>
+        {/* Multi-select filters */}
+        <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm">
+          <div className="grid gap-3 md:grid-cols-3">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Продукт</div>
+              <DropdownMulti
+                label={selProductIds.length > 0 ? `Обрано: ${selProductIds.length}` : 'Всі'}
+                items={(state.products||[]).map(p => ({ id: p.id, name: p.name }))}
+                selected={selProductIds}
+                onToggle={(id, checked)=> setSelProductIds(ids => checked ? [...new Set([...ids, id])] : ids.filter(x=>x!==id))}
+                onClear={()=> setSelProductIds([])}
+              />
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Клас деталі</div>
+              <DropdownMulti
+                label={selClassIds.length > 0 ? `Обрано: ${selClassIds.length}` : 'Всі'}
+                items={(() => {
+                  const allowedClassIds = new Set(
+                    selProductIds.length === 0
+                      ? state.partClasses.map(c=>c.id)
+                      : (state.products||[])
+                          .filter(p=> selProductIds.includes(p.id))
+                          .flatMap(p => (p.bom||[]).map(b => state.partTypes.find(t=>t.id===b.partTypeId)?.classId).filter(Boolean))
+                  );
+                  return state.partClasses.filter(c=> allowedClassIds.has(c.id)).map(c => ({ id: c.id, name: c.name }));
+                })()}
+                selected={selClassIds}
+                onToggle={(id, checked)=> setSelClassIds(ids => checked ? [...new Set([...ids, id])] : ids.filter(x=>x!==id))}
+                onClear={()=> setSelClassIds([])}
+              />
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
+              <DropdownMulti
+                label={selTypeIds.length > 0 ? `Обрано: ${selTypeIds.length}` : 'Всі'}
+                items={(() => {
+                  const allowedTypes = new Set(
+                    selClassIds.length === 0 ? state.partTypes.map(t=>t.id) : state.partTypes.filter(t=> selClassIds.includes(t.classId)).map(t=>t.id)
+                  );
+                  return state.partTypes.filter(t=> allowedTypes.has(t.id)).map(t => ({ id: t.id, name: t.name }));
+                })()}
+                selected={selTypeIds}
+                onToggle={(id, checked)=> setSelTypeIds(ids => checked ? [...new Set([...ids, id])] : ids.filter(x=>x!==id))}
+                onClear={()=> setSelTypeIds([])}
+              />
+            </div>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button className="rounded-xl border px-3 py-2 hover:bg-gray-50" onClick={() => { setSelProductIds([]); setSelClassIds([]); setSelTypeIds([]); }}>Скинути</button>
+            {(selProductIds.length + selClassIds.length + selTypeIds.length) > 0 && (
+              <span className="text-xs text-gray-600">Активних фільтрів: {selProductIds.length + selClassIds.length + selTypeIds.length}</span>
+            )}
+          </div>
+        </div>
         {showWriteoff && (
           <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm grid md:grid-cols-5 gap-3 items-end">
             <div>
@@ -2720,7 +3047,7 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             </div>
           </div>
         )}
-        <Table columns={cols} rows={rows} empty="Порожньо" />
+        <Table columns={cols} rows={filteredRows} empty="Порожньо" />
       </Section>
       <Section title="Склад готової продукції" icon={Boxes}>
         <Table columns={prodCols} rows={prodRows} empty="Немає зібраних батарей" />
@@ -3073,15 +3400,27 @@ function AssemblyView({ state, dispatch }) {
 }
 
 function SalesView({ state, dispatch }) {
-  const [productId, setProductId] = useState(state.products[0]?.id || "");
-  const [qty, setQty] = useState(1);
-  const [price, setPrice] = useState(0);
-  const [date, setDate] = useState(todayISO());
-  const [customer, setCustomer] = useState("");
-  const [note, setNote] = useState("");
+  const [customers, setCustomers] = useState([]);
+  useEffect(() => { api.listCustomers().then(setCustomers).catch(() => setCustomers([])); }, []);
 
-  const stock = state.productStock[productId] || 0;
-  const canSell = qty > 0 && stock >= qty && price >= 0;
+  const [saleRows, setSaleRows] = useState([]);
+  const [saleDate, setSaleDate] = useState(todayISO());
+  const [saleCustomerId, setSaleCustomerId] = useState("");
+  const [saleNote, setSaleNote] = useState("");
+
+  function addSaleRow() {
+    const pid = state.products[0]?.id || "";
+    const suggested = state.products.find(p=>p.id===pid)?.suggestedPrice ?? 0;
+    setSaleRows(x => [...x, { id: Math.random().toString(36).slice(2), productId: pid, qty: 1, pricePerUnit: Number(suggested)||0 }]);
+  }
+  function updateSaleRow(id, patch) { setSaleRows(x => x.map(r => r.id === id ? { ...r, ...patch } : r)); }
+  function removeSaleRow(id) { setSaleRows(x => x.filter(r => r.id !== id)); }
+
+  const saleTotal = saleRows.reduce((s, r) => s + Number(r.qty||0) * Number(r.pricePerUnit||0), 0);
+  const canSaveSale = saleRows.length > 0 && saleRows.every(r => {
+    // дозвіл зберігати замовлення навіть без наявності на складі (відкладене списання)
+    return r.productId && Number(r.qty||0) > 0 && Number(r.pricePerUnit||0) >= 0;
+  });
 
   const cols = [
     { key: "date", header: "Дата" },
@@ -3095,36 +3434,136 @@ function SalesView({ state, dispatch }) {
 
   return (
     <div className="space-y-6">
-      <Section title="Нова продажа" icon={DollarSign}>
+      <Section title="Нове замовлення" icon={DollarSign}>
         {state.products.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку створіть <b>Продукт</b> та зберіть його.</div>
+        ) : saleRows.length === 0 ? (
+          <div className="flex items-center justify-end py-2">
+            <button className="rounded-xl bg-gray-900 text-white px-5 py-3 flex items-center gap-2" onClick={addSaleRow}>
+              <Plus className="w-4 h-4"/> Додати позицію
+            </button>
+          </div>
         ) : (
-          <div className="grid md:grid-cols-6 gap-3 items-end">
-            <Select value={productId} onChange={setProductId}>
-              {state.products.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-            </Select>
-            <NumberInput value={qty} onChange={setQty} min={1} />
-            <NumberInput value={price} onChange={setPrice} min={0} placeholder="Ціна за од., ₴" />
-            <input type="date" className="border rounded-xl px-3 py-2" value={date} onChange={(e) => setDate(e.target.value)} />
-            <TextInput value={customer} onChange={setCustomer} placeholder="Клієнт (необов'язково)" />
-            <TextInput value={note} onChange={setNote} placeholder="Нотатка" />
-            <div className="md:col-span-6">
-              <button
-                className={`rounded-xl px-4 py-2 text-white ${canSell ? 'bg-gray-900' : 'bg-gray-400 cursor-not-allowed'}`}
-                onClick={() => {
-                  if (!canSell) return;
-                  dispatch({ type: "SELL_PRODUCT", productId, qty: Number(qty), pricePerUnit: Number(price), date, customer, note });
-                  setQty(1); setPrice(0); setCustomer(""); setNote("");
-                }}
-                disabled={!canSell}
-              >Продати</button>
+          <div className="grid gap-3">
+            <div className="flex items-center gap-3">
+              <input type="date" className="border rounded-xl px-3 py-2" value={saleDate} onChange={(e)=> setSaleDate(e.target.value)} />
+              <select className="border rounded-xl px-3 py-2 bg-white" value={saleCustomerId} onChange={(e)=> setSaleCustomerId(e.target.value)}>
+                <option value="">— Клієнт —</option>
+                {customers.map(c => (<option key={c.id} value={c.id}>{c.name} {c.numericId ? `(ID ${c.numericId})` : ''}</option>))}
+              </select>
+              <TextInput value={saleNote} onChange={setSaleNote} placeholder="Нотатка (необов'язково)" />
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50 ml-auto" onClick={addSaleRow}><Plus className="w-4 h-4"/> Додати позицію</button>
+            </div>
+            <div className="overflow-x-auto border rounded-2xl bg-white">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="p-2 text-left">Продукт</th>
+                    <th className="p-2 text-left">К-сть</th>
+                    <th className="p-2 text-left">Ціна за од.</th>
+                    <th className="p-2 text-left">Склад</th>
+                    <th className="p-2 text-left">Сума</th>
+                    <th className="p-2 text-left">—</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {saleRows.map(r => {
+                    const stock = state.productStock[r.productId] || 0;
+                    return (
+                      <tr key={r.id} className="odd:bg-white even:bg-gray-50">
+                        <td className="p-2">
+                          <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.productId} onChange={(e)=>{
+                            const pid = e.target.value;
+                            const suggested = state.products.find(p=>p.id===pid)?.suggestedPrice ?? r.pricePerUnit;
+                            updateSaleRow(r.id, { productId: pid, pricePerUnit: Number(suggested)||0 });
+                          }}>
+                            {state.products.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                          </select>
+                        </td>
+                        <td className="p-2"><NumberInput className="w-24" value={r.qty} onChange={(v)=> updateSaleRow(r.id, { qty: Number(v) })} min={1} step={1} /></td>
+                        <td className="p-2"><NumberInput className="w-28" value={r.pricePerUnit} onChange={(v)=> updateSaleRow(r.id, { pricePerUnit: Number(v) })} min={0} step={0.01} /></td>
+                        <td className="p-2 text-xs text-gray-600">Є: {stock}</td>
+                        <td className="p-2 font-medium">{currency(Number(r.qty||0) * Number(r.pricePerUnit||0))}</td>
+                        <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={()=> removeSaleRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="text-lg">Разом: <b>{currency(saleTotal)}</b></div>
+              <div className="flex items-center gap-2">
+                <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> { setSaleRows([]); setSaleNote(""); }}>Скасувати</button>
+                <button
+                  className={`rounded-xl px-4 py-2 text-white ${canSaveSale ? 'bg-gray-900' : 'bg-gray-400 cursor-not-allowed'}`}
+                  onClick={async ()=>{
+                    if (!canSaveSale) return;
+                    try {
+                      const customerName = customers.find(c=>c.id===saleCustomerId)?.name || '';
+                      for (const r of saleRows) {
+                        await api.sale({ productId: r.productId, qty: Number(r.qty||0), pricePerUnit: Number(r.pricePerUnit||0), date: saleDate, customer: customerName, note: saleNote });
+                      }
+                      setSaleRows([]); setSaleNote("");
+                      // refresh state: sales and balance are in state; productStock also changes
+                      const s = await api.getState();
+                      // update sales in place so history enables immediately
+                      // (parent holds state; quick-page refresh via reload may be heavy)
+                      // We'll just alert success here; history section will reflect after navigation
+                      alert('Замовлення збережено');
+                    } catch(e){ alert(String(e)); }
+                  }}
+                  disabled={!canSaveSale}
+                >Зберегти замовлення</button>
+              </div>
             </div>
           </div>
         )}
       </Section>
 
-      <Section title="Історія продажів" icon={DollarSign}>
-        <Table columns={cols} rows={state.sales} empty="Продажів поки немає" />
+      <Section title="Замовлення" icon={DollarSign}>
+        {(() => {
+          const colsOrders = [
+            { key: "date", header: "Дата" },
+            { key: "product", header: "Продукт", cell: (s) => state.products.find((p) => p.id === s.productId)?.name || "?" },
+            { key: "qty", header: "К-сть" },
+            { key: "price", header: "Ціна за од.", cell: (s) => currency(s.pricePerUnit) },
+            { key: "total", header: "Сума", cell: (s) => <b>{currency(s.total)}</b> },
+            { key: "afterTax", header: "Після податку (0.94)", cell: (s) => currency(Number(s.total||0)*0.94) },
+            { key: "status", header: "Статуси", cell: (r) => (
+              <div className="flex items-center gap-2 text-xs">
+                <button className={`px-2 py-0.5 rounded-full border ${r.paid ? 'bg-green-50 border-green-200 text-green-700' : ''}`} onClick={async()=>{
+                  try { if (r.paid) { await api.unpaySale(r.id); } else { await api.paySale(r.id); }
+                    const s = await api.getState(); applyPartialState({ sales: s.sales, balanceEntries: s.balanceEntries }); } catch(e){ alert(String(e)); }
+                }}>Оплачений</button>
+                <button className={`px-2 py-0.5 rounded-full border ${r.allocated ? 'bg-blue-50 border-blue-200 text-blue-700' : ''}`} onClick={async()=>{
+                  try { if (r.allocated) { await api.unallocateSale(r.id); } else { await api.allocateSale(r.id); }
+                    const s = await api.getState(); applyPartialState({ sales: s.sales, productStock: s.productStock }); } catch(e){ alert(String(e)); }
+                }}>Доданий до замовлення</button>
+                <button className={`px-2 py-0.5 rounded-full border ${r.shipped ? 'bg-purple-50 border-purple-200 text-purple-700' : ''}`} onClick={async()=>{
+                  try { if (r.shipped) { await api.unshipSale(r.id); } else { await api.shipSale(r.id); }
+                    const s = await api.getState(); applyPartialState({ sales: s.sales }); } catch(e){ alert(String(e)); }
+                }}>Відправлений</button>
+                <button className={`px-2 py-0.5 rounded-full border ${r.completed ? 'bg-gray-900 text-white border-gray-900' : ''}`} onClick={async()=>{
+                  try { if (r.completed) { await api.uncompleteSale(r.id); } else { await api.completeSale(r.id); }
+                    const s = await api.getState(); applyPartialState({ sales: s.sales }); } catch(e){ alert(String(e)); }
+                }}>Повністю виконано</button>
+              </div>
+            ) },
+            { key: 'actions', header: '—', thClass: 'w-40', cell: (r) => (
+              <div className="flex items-center gap-2">
+                <button className={`px-2 py-0.5 rounded-full border ${r.archived ? 'bg-orange-50 border-orange-200 text-orange-700' : ''}`} onClick={async()=>{
+                  try {
+                    await api.setSaleArchived(r.id, !r.archived);
+                    const s = await api.getState();
+                    applyPartialState({ sales: s.sales });
+                  } catch(e){ alert(String(e)); }
+                }}>{r.archived ? 'Розархівувати' : 'Архівувати'}</button>
+              </div>
+            )},
+          ];
+          return <Table columns={colsOrders} rows={state.sales} empty="Замовлень поки немає" />;
+        })()}
       </Section>
     </div>
   );
