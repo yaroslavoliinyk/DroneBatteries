@@ -3,6 +3,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -1528,3 +1531,21 @@ async def on_startup():
     await c_sales.create_index([("date", -1)])
     await c_balance.create_index([("date", -1)])
     await c_suppliers.create_index("name", unique=True)
+
+# ---------- Static frontend (SPA) ----------
+# Expect built assets in /app/static (index.html, assets/*)
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def _root():
+        return FileResponse(static_dir / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        # Serve API routes normally; this fallback is for client-side routing paths
+        index_path = static_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        raise HTTPException(404, "Not Found")
