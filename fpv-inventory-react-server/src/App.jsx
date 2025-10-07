@@ -156,8 +156,8 @@ export default function App() {
           suggestedPrice: action.suggestedPrice ? Number(action.suggestedPrice) : undefined,
           bom: action.bom.map(b => ({ partTypeId: b.partTypeId, qty: Number(b.qty||0) })),
         });
-      } else if (action.type === "ASSEMBLE_PRODUCT") {
-        await api.assemble({ productId: action.productId, qty: Number(action.qty||0), date: action.date || todayISO() });
+      } else if (action.type === "ASSEMBLY_START") {
+        await api.assemblyStart({ productId: action.productId, qty: Number(action.qty||0), date: action.date || todayISO() });
       } else if (action.type === "SELL_PRODUCT") {
         await api.sale({
           productId: action.productId,
@@ -2971,7 +2971,7 @@ function InventoryView({ state, dispatch, applyPartialState }) {
 
   const totalValue = filteredRows.reduce((s, r) => s + r.qty * r.avgCost, 0);
   const [showStockLog, setShowStockLog] = useState(false);
-  const [stockLog, setStockLog] = useState({ columns: [], rows: [] });
+  const [stockLog, setStockLog] = useState({ columns: [], rows: [], page: 1, pageSize: 10, total: 0 });
   const [showWriteoff, setShowWriteoff] = useState(false);
   const [showReplenish, setShowReplenish] = useState(false);
   const [woClassId, setWoClassId] = useState(state.partClasses[0]?.id || "");
@@ -2991,9 +2991,9 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             className="rounded-xl border border-yellow-400 text-yellow-700 px-3 py-2 text-sm hover:bg-yellow-50 inline-flex items-center gap-2"
             onClick={async () => {
               try {
-                const log = await api.stockLog();
+                const result = await api.stockLog(1, 10);
                 const typeName = (t) => t === 'replenish' ? 'Поповнення' : t === 'writeoff' ? 'Списання' : t === 'purchase' ? 'Закупка' : t === 'assembly_use' ? 'Збірка' : t === 'status_change' ? 'Статус' : (t || '—');
-                const rows = (log || []).map((l, i) => ({
+                const rows = (result.items || []).map((l, i) => ({
                   id: l.id || i,
                   datetime: l.datetimeKyiv,
                   className: l.className || '—',
@@ -3006,7 +3006,7 @@ function InventoryView({ state, dispatch, applyPartialState }) {
                   { key: 'partName', header: 'Вид деталі' },
                   { key: 'message', header: 'Дія' },
                 ];
-                setStockLog({ columns, rows });
+                setStockLog({ columns, rows, page: Number(result.page||1), pageSize: Number(result.pageSize||10), total: Number(result.total||rows.length) });
                 setShowStockLog(true);
               } catch (e) { alert(String(e)); }
             }}
@@ -3026,9 +3026,54 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             >Закрити</button>
           )}
         >
-          <Table columns={stockLog.columns} rows={stockLog.rows} empty="Лог порожній" />
+          <div className="space-y-3">
+            <Table columns={stockLog.columns} rows={stockLog.rows} empty="Лог порожній" />
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-600">Сторінка {stockLog.page} з {Math.max(1, Math.ceil(stockLog.total / stockLog.pageSize))}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  className="rounded-xl border px-2 py-1 text-sm disabled:opacity-50"
+                  disabled={stockLog.page <= 1}
+                  onClick={async()=>{
+                    try {
+                      const prev = Math.max(1, Number(stockLog.page)-1);
+                      const result = await api.stockLog(prev, stockLog.pageSize);
+                      const typeName = (t) => t === 'replenish' ? 'Поповнення' : t === 'writeoff' ? 'Списання' : t === 'purchase' ? 'Закупка' : t === 'assembly_use' ? 'Збірка' : t === 'status_change' ? 'Статус' : (t || '—');
+                      const rows = (result.items || []).map((l, i) => ({ id: l.id || i, datetime: l.datetimeKyiv, className: l.className || '—', partName: l.partTypeName || l.partTypeId, message: `${typeName(l.type)}${l.message ? ` → ${l.message}` : ''}` }));
+                      setStockLog(x => ({ ...x, rows, page: prev, total: Number(result.total||x.total), pageSize: Number(result.pageSize||x.pageSize) }));
+                    } catch(e){ alert(String(e)); }
+                  }}
+                >Назад</button>
+                <button
+                  className="rounded-xl border px-2 py-1 text-sm disabled:opacity-50"
+                  disabled={stockLog.page >= Math.ceil(stockLog.total / stockLog.pageSize)}
+                  onClick={async()=>{
+                    try {
+                      const next = Math.min(Math.ceil(stockLog.total / stockLog.pageSize), Number(stockLog.page)+1);
+                      const result = await api.stockLog(next, stockLog.pageSize);
+                      const typeName = (t) => t === 'replenish' ? 'Поповнення' : t === 'writeoff' ? 'Списання' : t === 'purchase' ? 'Закупка' : t === 'assembly_use' ? 'Збірка' : t === 'status_change' ? 'Статус' : (t || '—');
+                      const rows = (result.items || []).map((l, i) => ({ id: l.id || i, datetime: l.datetimeKyiv, className: l.className || '—', partName: l.partTypeName || l.partTypeId, message: `${typeName(l.type)}${l.message ? ` → ${l.message}` : ''}` }));
+                      setStockLog(x => ({ ...x, rows, page: next, total: Number(result.total||x.total), pageSize: Number(result.pageSize||x.pageSize) }));
+                    } catch(e){ alert(String(e)); }
+                  }}
+                >Вперед</button>
+              </div>
+            </div>
+          </div>
         </Section>
       )}
+      <Section title="Склад готової продукції" icon={Package}>
+        <Table
+          columns={[
+            { key: 'product', header: 'Продукт', cell: (r) => r.name },
+            { key: 'qty', header: 'К-сть' },
+          ]}
+          rows={(state.products || [])
+            .map(p => ({ id: p.id, name: p.name, qty: Number((state.productStock || {})[p.id] || 0) }))
+            .filter(r => r.qty > 0)}
+          empty="Готової продукції на складі немає"
+        />
+      </Section>
       <Section title="Склад деталей" icon={Warehouse} right={(
         <div className="flex items-center gap-2">
           <button
@@ -3042,6 +3087,73 @@ function InventoryView({ state, dispatch, applyPartialState }) {
           <Stat label="Загальна вартість деталей" value={`${currency(totalValue)} ₴`} icon={Warehouse} />
         </div>
       )}>
+        {showWriteoff && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm">
+            <div className="grid md:grid-cols-5 gap-3 items-end">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Клас</div>
+                <Select value={woClassId} onChange={(v)=> { setWoClassId(v); setWoPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
+                  {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
+                <Select value={woPartId} onChange={setWoPartId}>
+                  {state.partTypes.filter(t=> !woClassId || t.classId===woClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Кількість</div>
+                <NumberInput value={woQty} onChange={setWoQty} min={1} step={1} />
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-xs text-gray-500 mb-1">Причина</div>
+                <TextInput value={woReason} onChange={setWoReason} placeholder="Причина списання" />
+              </div>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async ()=>{
+                if (!woPartId || !woQty || !woReason.trim()) return;
+                try { await api.writeoff({ classId: woClassId, partTypeId: woPartId, qty: Number(woQty), reason: woReason.trim() }); const s = await api.getState(); applyPartialState({ inventory: s.inventory }); setShowWriteoff(false); setWoQty(0); setWoReason(""); } catch(e){ alert(String(e)); }
+              }}><Save className="w-4 h-4"/> Зберегти</button>
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowWriteoff(false)}>Скасувати</button>
+            </div>
+          </div>
+        )}
+        {showReplenish && (
+          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm">
+            <div className="grid md:grid-cols-5 gap-3 items-end">
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Клас</div>
+                <Select value={rpClassId} onChange={(v)=> { setRpClassId(v); setRpPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
+                  {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
+                <Select value={rpPartId} onChange={setRpPartId}>
+                  {state.partTypes.filter(t=> !rpClassId || t.classId===rpClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
+                </Select>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Кількість</div>
+                <NumberInput value={rpQty} onChange={setRpQty} min={1} step={1} />
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-xs text-gray-500 mb-1">Причина</div>
+                <TextInput value={rpReason} onChange={setRpReason} placeholder="Причина поповнення" />
+              </div>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async ()=>{
+                if (!rpPartId || !rpQty || !rpReason.trim()) return;
+                try { await api.replenish({ classId: rpClassId, partTypeId: rpPartId, qty: Number(rpQty), reason: rpReason.trim() }); const s = await api.getState(); applyPartialState({ inventory: s.inventory }); setShowReplenish(false); setRpQty(0); setRpReason(""); } catch(e){ alert(String(e)); }
+              }}><Save className="w-4 h-4"/> Зберегти</button>
+              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowReplenish(false)}>Скасувати</button>
+            </div>
+          </div>
+        )}
+        
         {/* Multi-select filters */}
         <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm">
           <div className="grid gap-3 md:grid-cols-3">
@@ -3097,73 +3209,11 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             )}
           </div>
         </div>
-        {showWriteoff && (
-          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm grid md:grid-cols-5 gap-3 items-end">
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Клас</div>
-              <Select value={woClassId} onChange={(v)=> { setWoClassId(v); setWoPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
-                {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
-              </Select>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
-              <Select value={woPartId} onChange={setWoPartId}>
-                {state.partTypes.filter(t=> !woClassId || t.classId===woClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
-              </Select>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Кількість</div>
-              <NumberInput value={woQty} onChange={setWoQty} min={1} step={1} />
-            </div>
-            <div className="md:col-span-2">
-              <div className="text-xs text-gray-500 mb-1">Причина</div>
-              <TextInput value={woReason} onChange={setWoReason} placeholder="Причина списання" />
-            </div>
-            <div className="md:col-span-5 flex gap-2">
-              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async ()=>{
-                if (!woPartId || !woQty || !woReason.trim()) return;
-                try { await api.writeoff({ classId: woClassId, partTypeId: woPartId, qty: Number(woQty), reason: woReason.trim() }); const s = await api.getState(); applyPartialState({ inventory: s.inventory }); setShowWriteoff(false); setWoQty(0); setWoReason(""); } catch(e){ alert(String(e)); }
-              }}><Save className="w-4 h-4"/> Зберегти</button>
-              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowWriteoff(false)}>Скасувати</button>
-            </div>
-          </div>
-        )}
-        {showReplenish && (
-          <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm grid md:grid-cols-5 gap-3 items-end">
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Клас</div>
-              <Select value={rpClassId} onChange={(v)=> { setRpClassId(v); setRpPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
-                {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
-              </Select>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
-              <Select value={rpPartId} onChange={setRpPartId}>
-                {state.partTypes.filter(t=> !rpClassId || t.classId===rpClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
-              </Select>
-            </div>
-            <div>
-              <div className="text-xs text-gray-500 mb-1">Кількість</div>
-              <NumberInput value={rpQty} onChange={setRpQty} min={1} step={1} />
-            </div>
-            <div className="md:col-span-2">
-              <div className="text-xs text-gray-500 mb-1">Причина</div>
-              <TextInput value={rpReason} onChange={setRpReason} placeholder="Причина поповнення" />
-            </div>
-            <div className="md:col-span-5 flex gap-2">
-              <button className="rounded-xl bg-gray-900 text-white px-4 py-2" onClick={async ()=>{
-                if (!rpPartId || !rpQty || !rpReason.trim()) return;
-                try { await api.replenish({ classId: rpClassId, partTypeId: rpPartId, qty: Number(rpQty), reason: rpReason.trim() }); const s = await api.getState(); applyPartialState({ inventory: s.inventory }); setShowReplenish(false); setRpQty(0); setRpReason(""); } catch(e){ alert(String(e)); }
-              }}><Save className="w-4 h-4"/> Зберегти</button>
-              <button className="rounded-xl border px-4 py-2 hover:bg-gray-50" onClick={()=> setShowReplenish(false)}>Скасувати</button>
-            </div>
-          </div>
-        )}
+        
+        
         <Table columns={cols} rows={filteredRows} empty="Порожньо" />
       </Section>
-      <Section title="Склад готової продукції" icon={Boxes}>
-        <Table columns={prodCols} rows={prodRows} empty="Немає зібраних батарей" />
-      </Section>
+      
     </div>
   );
 }
@@ -3256,7 +3306,9 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
               <thead className="bg-gray-50"><tr><th className="p-2 text-left">Клас</th><th className="p-2 text-left">Деталь</th><th className="p-2 text-left">К-сть</th><th className="p-2 text-left">Сер. собівартість</th><th className="p-2 text-left">Внесок</th><th className="p-2 text-left">—</th></tr></thead>
               <tbody>
                 {editBom.map(r => {
+                  const part = state.partTypes.find(pt => pt.id === r.partTypeId);
                   const avg = state.inventory[r.partTypeId]?.avgCost || 0;
+                  const isNonPcs = part && part.unit !== 'pcs';
                   return (
                     <tr key={r.id} className="odd:bg-white even:bg-gray-50">
                       <td className="p-2">
@@ -3280,9 +3332,9 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                           {state.partTypes.filter(pt=> !r.classId || pt.classId===r.classId).map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
                         </select>
                       </td>
-                      <td className="p-2">{part && part.unit !== 'pcs' ? '—' : (<NumberInput value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} />)}</td>
-                      <td className="p-2">{part && part.unit !== 'pcs' ? '—' : currency(avg)}</td>
-                      <td className="p-2 font-medium">{part && part.unit !== 'pcs' ? '—' : currency(avg * Number(r.qty || 0))}</td>
+                      <td className="p-2">{isNonPcs ? '—' : (<NumberInput value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} />)}</td>
+                      <td className="p-2">{isNonPcs ? '—' : currency(avg)}</td>
+                      <td className="p-2 font-medium">{isNonPcs ? '—' : currency(avg * Number(r.qty || 0))}</td>
                       <td className="p-2"><TextInput value={r.note} onChange={(v)=> updateBomRow(r.id, { note: v })} placeholder="Нотатка" /></td>
                       <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeBomRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
                     </tr>
@@ -3460,11 +3512,33 @@ function AssemblyView({ state, dispatch }) {
   const [qty, setQty] = useState(1);
   const [date, setDate] = useState(todayISO());
 
+  // Icon helpers for class chips within Assembly view
+  const ICONS = {
+    Battery, Cpu, Cable, Shield, Gauge, HardDrive, Camera, Box, Plug, Fan, Layers, Lock, Radio, Rocket, Zap,
+  };
+  function renderClassIcon(name) {
+    const IconComp = (name && ICONS[name]) || Package;
+    return <IconComp className="w-4 h-4" />;
+  }
+
   const product = state.products.find((p) => p.id === productId);
   const canAssemble = React.useMemo(() => {
     if (!product) return false;
-    return product.bom.every((b) => (state.inventory[b.partTypeId]?.qty || 0) >= b.qty * qty);
-  }, [product, state.inventory, qty]);
+    return (product.bom || []).every((b) => {
+      const pt = state.partTypes.find((p) => p.id === b.partTypeId);
+      if (!pt) return false;
+      const unit = pt.unit || 'pcs';
+      if (unit === 'pcs') {
+        const have = Number(state.inventory[b.partTypeId]?.qty || 0);
+        const need = Number(b.qty || 0) * Number(qty || 0);
+        return have >= need;
+      } else {
+        // Non-pcs: treat 'ok' and 'low' as sufficient (only 'none' blocks)
+        const invStatus = (pt.stockStatus === 'none') ? 'none' : (pt.runningLow ? 'low' : (pt.stockStatus || 'ok'));
+        return invStatus !== 'none';
+      }
+    });
+  }, [product, state.inventory, state.partTypes, qty]);
 
   return (
     <div className="space-y-6">
@@ -3482,11 +3556,11 @@ function AssemblyView({ state, dispatch }) {
               className={`rounded-xl px-4 py-2 text-white ${canAssemble ? 'bg-gray-900' : 'bg-gray-400 cursor-not-allowed'}`}
               onClick={() => {
                 if (!product || !canAssemble) return;
-                dispatch({ type: "ASSEMBLE_PRODUCT", productId, qty: Number(qty), date });
+                dispatch({ type: "ASSEMBLY_START", productId, qty: Number(qty), date });
                 setQty(1);
               }}
               disabled={!canAssemble}
-            >Зібрати</button>
+            >Взяти в збірку</button>
           </div>
         )}
       </Section>
@@ -3495,19 +3569,89 @@ function AssemblyView({ state, dispatch }) {
       <Section title="Потрібні деталі" icon={Wrench}>
           <Table
             columns={[
+              { key: "class", header: "Клас", cell: (r) => (
+                <div className="flex items-center gap-2">
+                  {renderClassIcon(r.classIcon)}
+                  <span>{r.className || "?"}</span>
+                </div>
+              ) },
               { key: "name", header: "Деталь" },
               { key: "need", header: "Потрібно" },
-              { key: "have", header: "Є на складі" },
+              { key: "have", header: "Є на складі", cell: (r) => r.haveDisplay },
+              { key: "status", header: "Статус", cell: (r) => (
+                r.statusOk ? (
+                  <span className="inline-flex items-center px-2 py-1 rounded-lg border border-green-500 text-green-700 bg-green-50 text-xs">Достатньо</span>
+                ) : (
+                  <span className="inline-flex items-center px-2 py-1 rounded-lg border border-red-500 text-red-700 bg-red-50 text-xs">Недостатньо</span>
+                )
+              ) },
             ]}
-            rows={product.bom.map((b) => ({
-              id: b.id,
-              name: (state.partTypes.find((p) => p.id === b.partTypeId)?.name) || "?",
-              need: b.qty * qty,
-              have: state.inventory[b.partTypeId]?.qty || 0,
-            }))}
+            rows={product.bom.map((b) => {
+              const pt = state.partTypes.find((p) => p.id === b.partTypeId);
+              const cls = state.partClasses.find((c) => c.id === pt?.classId);
+              const unit = (pt?.unit) || 'pcs';
+              const haveQty = state.inventory[b.partTypeId]?.qty || 0;
+              const needQty = b.qty * qty;
+              // Map inventory status the same way as in InventoryView
+              const invStatus = (()=>{
+                if (!pt) return 'none';
+                if (unit === 'pcs') {
+                  if (Number(haveQty) <= 0) return 'none';
+                  const threshold = pt.runningLowThreshold ?? 10;
+                  return (Number(haveQty) <= Number(threshold)) ? 'low' : 'ok';
+                }
+                return (pt.stockStatus === 'none') ? 'none' : (pt.runningLow ? 'low' : (pt.stockStatus || 'ok'));
+              })();
+              const isPcs = unit === 'pcs';
+              const statusOk = isPcs ? (Number(haveQty) >= Number(needQty)) : (invStatus !== 'none');
+              const haveDisplay = isPcs ? (haveQty) : (
+                invStatus === 'ok'
+                  ? <span className="inline-flex items-center px-2 py-1 rounded-lg border border-green-500 text-green-700 bg-green-50 text-xs">Достатньо</span>
+                  : invStatus === 'low'
+                    ? <span className="inline-flex items-center px-2 py-1 rounded-lg border border-yellow-400 text-yellow-800 bg-yellow-50 text-xs">Закінчується</span>
+                    : <span className="inline-flex items-center px-2 py-1 rounded-lg border border-red-500 text-red-700 bg-red-50 text-xs">Немає</span>
+              );
+              return {
+                id: b.id,
+                className: cls?.name,
+                classIcon: cls?.icon,
+                name: pt?.name || "?",
+                need: needQty,
+                have: haveQty,
+                haveDisplay,
+                statusOk,
+              };
+            })}
           />
         </Section>
       )}
+
+      <Section title="В процесі збірки" icon={Factory}>
+        <Table
+          columns={[
+            { key: 'date', header: 'Дата' },
+            { key: 'product', header: 'Продукт', cell: (a) => state.products.find(p=>p.id===a.productId)?.name || '?' },
+            { key: 'qty', header: 'К-сть' },
+            { key: 'status', header: 'Статус', cell: (a) => (a.status === 'completed' ? 'Зібрано' : 'Не зібрано') },
+            { key: 'actions', header: '—', cell: (a) => (
+              a.status === 'completed' ? null : (
+                <button
+                  className="rounded-lg bg-gray-900 text-white px-3 py-1 text-sm"
+                  onClick={async()=>{
+                    try {
+                      await api.completeAssembly(a.id);
+                      // refresh state to reflect product stock and assemblies
+                      dispatch({ type: 'REFRESH' });
+                    } catch(e){ alert(String(e)); }
+                  }}
+                >Зібрати</button>
+              )
+            ) },
+          ]}
+          rows={(state.assemblies || []).filter(a => a.status !== 'completed')}
+          empty="Немає активних збірок"
+        />
+      </Section>
     </div>
   );
 }
@@ -3530,10 +3674,30 @@ function SalesView({ state, dispatch, applyPartialState }) {
     }
   }, [showArchived]);
 
+  // Inline edit state for orders
+  const [editingSaleId, setEditingSaleId] = useState(null);
+  const [editSale, setEditSale] = useState({ productId: "", qty: 1, pricePerUnit: 0, taxExempt: false, date: todayISO() });
+  function startEditSale(r){
+    setEditingSaleId(r.id);
+    setEditSale({ productId: r.productId, qty: Number(r.qty||0), pricePerUnit: Number(r.pricePerUnit||0), taxExempt: !!r.taxExempt, date: r.date || todayISO() });
+  }
+  function cancelEditSale(){ setEditingSaleId(null); }
+  async function saveEditSale(r){
+    try {
+      const wasAllocated = !!r.allocated;
+      if (wasAllocated) { try { await api.unallocateSale(r.id); } catch(_){} }
+      await api.updateSale(r.id, { productId: editSale.productId, qty: Number(editSale.qty||0), pricePerUnit: Number(editSale.pricePerUnit||0), date: editSale.date, taxExempt: !!editSale.taxExempt });
+      if (wasAllocated) { try { await api.allocateSale(r.id); } catch(e){ alert(String(e)); } }
+      const s = await api.getState();
+      applyPartialState({ sales: s.sales, productStock: s.productStock, balanceEntries: s.balanceEntries });
+      setEditingSaleId(null);
+    } catch(e){ alert(String(e)); }
+  }
+
   function addSaleRow() {
     const pid = state.products[0]?.id || "";
     const suggested = state.products.find(p=>p.id===pid)?.suggestedPrice ?? 0;
-    setSaleRows(x => [...x, { id: Math.random().toString(36).slice(2), productId: pid, qty: 1, pricePerUnit: Number(suggested)||0 }]);
+    setSaleRows(x => [...x, { id: Math.random().toString(36).slice(2), productId: pid, qty: 1, pricePerUnit: Number(suggested)||0, taxExempt: false }]);
   }
   function updateSaleRow(id, patch) { setSaleRows(x => x.map(r => r.id === id ? { ...r, ...patch } : r)); }
   function removeSaleRow(id) { setSaleRows(x => x.filter(r => r.id !== id)); }
@@ -3604,7 +3768,13 @@ function SalesView({ state, dispatch, applyPartialState }) {
                         </td>
                         <td className="p-2"><NumberInput className="w-24" value={r.qty} onChange={(v)=> updateSaleRow(r.id, { qty: Number(v) })} min={1} step={1} /></td>
                         <td className="p-2"><NumberInput className="w-28" value={r.pricePerUnit} onChange={(v)=> updateSaleRow(r.id, { pricePerUnit: Number(v) })} min={0} step={0.01} /></td>
-                        <td className="p-2 text-xs text-gray-600">Є: {stock}</td>
+                        <td className="p-2 text-xs text-gray-600">
+                          <div>Є: {stock}</div>
+                          <label className="mt-1 inline-flex items-center gap-2 text-xs border rounded-lg px-2 py-1">
+                            <input type="checkbox" className="scale-110" checked={!!r.taxExempt} onChange={(e)=> updateSaleRow(r.id, { taxExempt: e.target.checked })} />
+                            Без податку
+                          </label>
+                        </td>
                         <td className="p-2 font-medium">{currency(Number(r.qty||0) * Number(r.pricePerUnit||0))}</td>
                         <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={()=> removeSaleRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
                       </tr>
@@ -3624,7 +3794,7 @@ function SalesView({ state, dispatch, applyPartialState }) {
                     try {
                       const customerName = customers.find(c=>c.id===saleCustomerId)?.name || '';
                       for (const r of saleRows) {
-                        await api.sale({ productId: r.productId, qty: Number(r.qty||0), pricePerUnit: Number(r.pricePerUnit||0), date: saleDate, customer: customerName, note: saleNote });
+                        await api.sale({ productId: r.productId, qty: Number(r.qty||0), pricePerUnit: Number(r.pricePerUnit||0), date: saleDate, customer: customerName, note: saleNote, taxExempt: !!r.taxExempt });
                       }
                       setSaleRows([]); setSaleNote("");
                       // Refresh UI with latest data so the new orders appear immediately
@@ -3659,12 +3829,44 @@ function SalesView({ state, dispatch, applyPartialState }) {
       >
         {(() => {
           const colsOrders = [
-            { key: "date", header: "Дата" },
-            { key: "product", header: "Продукт", cell: (s) => state.products.find((p) => p.id === s.productId)?.name || "?" },
-            { key: "qty", header: "К-сть" },
-            { key: "price", header: "Ціна за од.", cell: (s) => currency(s.pricePerUnit) },
-            { key: "total", header: "Сума", cell: (s) => <b>{currency(s.total)}</b> },
-            { key: "afterTax", header: "Після податку (0.94)", cell: (s) => currency(Number(s.total||0)*0.94) },
+            { key: "date", header: "Дата", cell: (s) => (
+              editingSaleId === s.id ? (
+                <input type="date" className="border rounded-xl px-2 py-1" value={editSale.date} onChange={(e)=> setEditSale(v=>({ ...v, date: e.target.value }))} />
+              ) : (s.date)
+            ) },
+            { key: "product", header: "Продукт", cell: (s) => (
+              editingSaleId === s.id ? (
+                <select className="w-full border rounded-xl px-2 py-1 bg-white" value={editSale.productId} onChange={(e)=> setEditSale(v=>({ ...v, productId: e.target.value }))}>
+                  {state.products.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                </select>
+              ) : (state.products.find((p) => p.id === s.productId)?.name || "?")
+            ) },
+            { key: "qty", header: "К-сть", cell: (s) => (
+              editingSaleId === s.id ? (
+                <NumberInput className="w-24" value={editSale.qty} onChange={(v)=> setEditSale(x=>({ ...x, qty: Number(v) }))} min={1} step={1} />
+              ) : (s.qty)
+            ) },
+            { key: "price", header: "Ціна за од.", cell: (s) => (
+              editingSaleId === s.id ? (
+                <NumberInput className="w-28" value={editSale.pricePerUnit} onChange={(v)=> setEditSale(x=>({ ...x, pricePerUnit: Number(v) }))} min={0} step={0.01} />
+              ) : (currency(s.pricePerUnit))
+            ) },
+            { key: "tax", header: "Без податку", cell: (s) => (
+              editingSaleId === s.id ? (
+                <label className="inline-flex items-center gap-2 text-xs border rounded-lg px-2 py-1">
+                  <input type="checkbox" className="scale-110" checked={!!editSale.taxExempt} onChange={(e)=> setEditSale(v=>({ ...v, taxExempt: e.target.checked }))} />
+                  Так
+                </label>
+              ) : (s.taxExempt ? 'Так' : 'Ні')
+            ) },
+            { key: "total", header: "Сума", cell: (s) => (
+              <b>{currency(editingSaleId === s.id ? Number(editSale.qty||0) * Number(editSale.pricePerUnit||0) : Number(s.total||0))}</b>
+            ) },
+            { key: "afterTax", header: "Після податку (0.94)", cell: (s) => {
+              const total = editingSaleId === s.id ? (Number(editSale.qty||0) * Number(editSale.pricePerUnit||0)) : Number(s.total||0);
+              const te = editingSaleId === s.id ? !!editSale.taxExempt : !!s.taxExempt;
+              return currency(te ? total : total * 0.94);
+            } },
             { key: "status", header: "Статуси", cell: (r) => (
               <div className="flex items-center gap-2 text-xs">
                 <PillSelect
@@ -3732,32 +3934,26 @@ function SalesView({ state, dispatch, applyPartialState }) {
                 />
               </div>
             ) },
-            { key: 'actions', header: '—', thClass: 'w-40', cell: (r) => (
+            { key: 'actions', header: '—', thClass: 'w-48', cell: (r) => (
               <div className="flex items-center gap-2">
-                <button
-                  className="p-2 rounded-lg border hover:bg-gray-50"
-                  title="Редагувати"
-                  onClick={async()=>{
-                    const newQty = prompt('К-сть', String(r.qty));
-                    if (newQty === null) return;
-                    const newPrice = prompt('Ціна за од.', String(r.pricePerUnit));
-                    if (newPrice === null) return;
-                    try {
-                      const wasAllocated = !!r.allocated;
-                      if (wasAllocated) {
-                        try { await api.unallocateSale(r.id); } catch(_){}
-                      }
-                      await api.updateSale(r.id, { qty: Number(newQty), pricePerUnit: Number(newPrice) });
-                      if (wasAllocated) {
-                        try { await api.allocateSale(r.id); } catch (e) { alert(String(e)); }
-                      }
-                      const s = await api.getState();
-                      applyPartialState({ sales: s.sales, productStock: s.productStock });
-                    } catch(e) { alert(String(e)); }
-                  }}
-                >
-                  <Pencil className="w-4 h-4" />
-                </button>
+                {editingSaleId === r.id ? (
+                  <>
+                    <button className="p-2 rounded-lg border bg-green-50 border-green-300 text-green-700 hover:opacity-80" title="Зберегти" onClick={()=> saveEditSale(r)}>
+                      <Save className="w-4 h-4" />
+                    </button>
+                    <button className="p-2 rounded-lg border hover:bg-gray-50" title="Скасувати" onClick={cancelEditSale}>
+                      Скасувати
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="p-2 rounded-lg border hover:bg-gray-50"
+                    title="Редагувати"
+                    onClick={()=> startEditSale(r)}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                )}
                 <button
                   className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300"
                   title="Видалити"

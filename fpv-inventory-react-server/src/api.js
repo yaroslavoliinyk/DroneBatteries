@@ -39,6 +39,9 @@ export const api = {
   updateProduct: (id, o) => http("PUT", `/products/${id}`, o),
   deleteProduct: (id) => http("DELETE", `/products/${id}`),
   assemble: (o) => http("POST", "/assembly", o),
+  // Two-step assembly
+  assemblyStart: (o) => http("POST", "/assembly/start", o),
+  completeAssembly: (id) => http("POST", `/assemblies/${id}/complete`),
   sale: (o) => http("POST", "/sales", o),
   paySale: (id) => http("POST", `/sales/${id}/pay`),
   unpaySale: (id) => http("POST", `/sales/${id}/unpay`),
@@ -57,7 +60,7 @@ export const api = {
   // Manual stock ops + log
   writeoff: (o) => http("POST", "/stock/writeoff", o),
   replenish: (o) => http("POST", "/stock/replenish", o),
-  stockLog: () => http("GET", "/stock/log"),
+  stockLog: (page=1, pageSize=10) => http("GET", `/stock/log?page=${page}&page_size=${pageSize}`),
   // Suppliers
   listSuppliers: () => http("GET", "/suppliers"),
   addSupplier: (o) => http("POST", "/suppliers", o),

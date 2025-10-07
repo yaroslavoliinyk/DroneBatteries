@@ -173,9 +173,16 @@ async def rebuild_inventory_and_stock() -> None:
         product = await c_products.find_one({"_id": asm.get("productId")})
         if not product or q <= 0:
             continue
+        # Always deduct parts (taken into assembly at start) for pcs only
         for b in product.get("bom", []):
-            await upsert_inventory(b["partTypeId"], -float(b.get("qty", 0)) * q, 0.0)
-        await inc_product_stock(product["id"], q)
+            pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
+            unit = (pt or {}).get("unit") or "pcs"
+            if unit == "pcs":
+                await upsert_inventory(b["partTypeId"], -float(b.get("qty", 0)) * q, 0.0)
+        # Only increase finished goods stock for completed (or legacy without status)
+        status = asm.get("status")
+        if status in (None, "completed"):
+            await inc_product_stock(product["id"], q)
 
     # 3) Apply only allocated sales
     async for s in c_sales.find({"allocated": True}):
@@ -318,6 +325,7 @@ class Sale(BaseModel):
     total: float
     customer: Optional[str] = ""
     note: Optional[str] = ""
+    taxExempt: Optional[bool] = False
 
 class Customer(BaseModel):
     id: Optional[str] = None
@@ -1165,11 +1173,16 @@ async def stock_replenish(req: ManualStockOpRequest):
     return {"ok": True}
 
 @app.get("/stock/log")
-async def stock_log():
-    # Sort oldest → newest so остання операція внизу
-    docs = [x async for x in c_stock_ops.find().sort([("_id", 1)])]
+async def stock_log(page: int = 1, page_size: int = 10):
+    page = max(1, int(page))
+    page_size = max(1, min(100, int(page_size)))
+    skip = (page - 1) * page_size
+    total = await c_stock_ops.count_documents({})
+    # Newest first for UX; adjust if needed
+    cursor = c_stock_ops.find().sort([("_id", -1)]).skip(skip).limit(page_size)
+    docs = [x async for x in cursor]
     for d in docs: d.pop("_id", None)
-    return docs
+    return {"items": docs, "page": page, "pageSize": page_size, "total": total}
 
 @app.delete("/suppliers/{supplier_id}")
 async def delete_supplier(supplier_id: str):
@@ -1185,6 +1198,51 @@ class AssemblyRequest(BaseModel):
     qty: int
     date: Optional[str] = None
 
+@app.post("/assembly/start")
+async def assembly_start(req: AssemblyRequest):
+    product = await c_products.find_one({"_id": req.productId})
+    if not product:
+        raise HTTPException(404, "Product not found")
+    q = int(req.qty)
+    if q <= 0:
+        raise HTTPException(400, "qty must be > 0")
+    # Check inventory / status
+    for b in product["bom"]:
+        pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
+        unit = (pt or {}).get("unit") or "pcs"
+        if unit == "pcs":
+            cur = await c_inventory.find_one({"_id": b["partTypeId"]})
+            have = float(cur.get("qty", 0)) if cur else 0.0
+            need = float(b["qty"]) * q
+            if have < need:
+                raise HTTPException(400, f"Недостатньо на складі для {b['partTypeId']}: потрібно {need}, є {have}")
+        else:
+            status = (pt or {}).get("stockStatus") or "ok"
+            if status != "ok":
+                raise HTTPException(400, f"Недостатньо на складі (статус) для {b['partTypeId']}")
+    # Deduct parts (take into assembly) only for pcs
+    for b in product["bom"]:
+        pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
+        unit = (pt or {}).get("unit") or "pcs"
+        if unit == "pcs":
+            await upsert_inventory(b["partTypeId"], -float(b["qty"]) * q, 0.0)
+            await log_stock_op("assembly_use", b["partTypeId"], -float(b["qty"]) * q, f"Взято в збірку {product.get('name','')} x{q}")
+        else:
+            # log informational status-based consume
+            await log_stock_op("assembly_use", b["partTypeId"], 0.0, f"Взято в збірку (статус) {product.get('name','')} x{q}")
+    # Create assembly record with WIP status (no product stock increment yet)
+    asm = {
+        "id": str(ObjectId()),
+        "_id": None,
+        "date": req.date or now_iso(),
+        "productId": req.productId,
+        "qty": q,
+        "status": "wip",  # Не зібрано
+    }
+    asm["_id"] = asm["id"]
+    await c_assemblies.insert_one(asm)
+    return {"ok": True, "assembly": {k: v for k, v in asm.items() if k != "_id"}}
+
 @app.post("/assembly")
 async def assemble(req: AssemblyRequest):
     product = await c_products.find_one({"_id": req.productId})
@@ -1193,30 +1251,59 @@ async def assemble(req: AssemblyRequest):
     q = int(req.qty)
     if q <= 0:
         raise HTTPException(400, "qty must be > 0")
-    # Check inventory
+    # Check inventory / status
     for b in product["bom"]:
-        cur = await c_inventory.find_one({"_id": b["partTypeId"]})
-        have = float(cur.get("qty", 0)) if cur else 0.0
-        need = float(b["qty"]) * q
-        if have < need:
-            raise HTTPException(400, f"Недостатньо на складі для {b['partTypeId']}: потрібно {need}, є {have}")
-    # Deduct parts
+        pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
+        unit = (pt or {}).get("unit") or "pcs"
+        if unit == "pcs":
+            cur = await c_inventory.find_one({"_id": b["partTypeId"]})
+            have = float(cur.get("qty", 0)) if cur else 0.0
+            need = float(b["qty"]) * q
+            if have < need:
+                raise HTTPException(400, f"Недостатньо на складі для {b['partTypeId']}: потрібно {need}, є {have}")
+        else:
+            status = (pt or {}).get("stockStatus") or "ok"
+            if status != "ok":
+                raise HTTPException(400, f"Недостатньо на складі (статус) для {b['partTypeId']}")
+    # Deduct parts (only for pcs)
     for b in product["bom"]:
-        await upsert_inventory(b["partTypeId"], -float(b["qty"]) * q, 0.0)
-        await log_stock_op("assembly_use", b["partTypeId"], -float(b["qty"]) * q, f"Збірка продукту {product.get('name','')} x{q}")
+        pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
+        unit = (pt or {}).get("unit") or "pcs"
+        if unit == "pcs":
+            await upsert_inventory(b["partTypeId"], -float(b["qty"]) * q, 0.0)
+            await log_stock_op("assembly_use", b["partTypeId"], -float(b["qty"]) * q, f"Збірка продукту {product.get('name','')} x{q}")
+        else:
+            await log_stock_op("assembly_use", b["partTypeId"], 0.0, f"Збірка продукту (статус) {product.get('name','')} x{q}")
     # Increase product stock
     await inc_product_stock(req.productId, q)
-    # Add assembly record
+    # Add assembly record (legacy immediate complete)
     asm = {
         "id": str(ObjectId()),
         "_id": None,
         "date": req.date or now_iso(),
         "productId": req.productId,
         "qty": q,
+        "status": "completed",
     }
     asm["_id"] = asm["id"]
     await c_assemblies.insert_one(asm)
     return {"ok": True, "assembly": {k: v for k, v in asm.items() if k != "_id"}}
+
+@app.post("/assemblies/{assembly_id}/complete")
+async def complete_assembly(assembly_id: str):
+    asm = await c_assemblies.find_one({"_id": assembly_id})
+    if not asm:
+        raise HTTPException(404, "Assembly not found")
+    if asm.get("status") == "completed":
+        return {"ok": True, "already": True}
+    pid = asm.get("productId")
+    q = int(asm.get("qty", 0))
+    if not pid or q <= 0:
+        raise HTTPException(400, "Invalid assembly data")
+    # Increase finished goods stock now
+    await inc_product_stock(pid, q)
+    await c_assemblies.update_one({"_id": assembly_id}, {"$set": {"status": "completed", "completedDate": now_iso()}})
+    return {"ok": True}
 
 # Product stock
 @app.get("/product-stock")
@@ -1239,6 +1326,7 @@ class SaleRequest(BaseModel):
     date: Optional[str] = None
     customer: Optional[str] = ""
     note: Optional[str] = ""
+    taxExempt: Optional[bool] = False
 
 @app.post("/sales")
 async def create_sale(req: SaleRequest):
@@ -1253,6 +1341,7 @@ async def create_sale(req: SaleRequest):
         "total": total,
         "customer": req.customer or "",
         "note": req.note or "",
+        "taxExempt": bool(req.taxExempt or False),
         # order lifecycle flags
         "paid": False,
         "allocated": False,  # products deducted from stock
@@ -1274,7 +1363,8 @@ async def pay_sale(sale_id: str):
         raise HTTPException(404, "Sale not found")
     if s.get("paid"):
         return {"ok": True, "already": True}
-    net_amount = float(s.get("total", 0)) * 0.94
+    te = bool(s.get("taxExempt", False))
+    net_amount = float(s.get("total", 0)) if te else (float(s.get("total", 0)) * 0.94)
     # enrich note with product and qty
     prod = await c_products.find_one({"_id": s.get("productId")})
     prod_name = (prod or {}).get("name") or s.get("productId")
@@ -1285,7 +1375,7 @@ async def pay_sale(sale_id: str):
         "date": s.get("date") or now_iso(),
         "type": "sale",
         "amount": net_amount,
-        "note": f"Оплата замовлення (після податку 0.94) — {s.get('customer') or ''}: {prod_name} × {qty}",
+        "note": f"Оплата замовлення ({'без податку' if te else 'після податку 0.94'}) — {s.get('customer') or ''}: {prod_name} × {qty}",
         "tag": "Продаж",
         "refSaleId": sale_id,
     }
@@ -1393,6 +1483,7 @@ class UpdateSaleBody(BaseModel):
     date: Optional[str] = None
     customer: Optional[str] = None
     note: Optional[str] = None
+    taxExempt: Optional[bool] = None
 
 @app.put("/sales/{sale_id}")
 async def update_sale(sale_id: str, body: UpdateSaleBody):
