@@ -1,5 +1,10 @@
 // src/api.js
-const API_BASE = import.meta.env.VITE_API_BASE || "";
+// Prefer same-origin by default. If someone accidentally builds with localhost,
+// auto-correct to same-origin in production.
+const configuredBase = (import.meta.env && import.meta.env.VITE_API_BASE) || "";
+const isBrowser = typeof window !== "undefined";
+const looksLikeLocalhost = (u) => typeof u === "string" && u.startsWith("http://localhost:");
+const API_BASE = (isBrowser && looksLikeLocalhost(configuredBase)) ? "" : configuredBase;
 
 async function http(method, url, body) {
   const res = await fetch(`${API_BASE}${url}`, {
