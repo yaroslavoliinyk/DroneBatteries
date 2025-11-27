@@ -154,7 +154,7 @@ export default function App() {
           name: action.name,
           note: action.note,
           suggestedPrice: action.suggestedPrice ? Number(action.suggestedPrice) : undefined,
-          bom: action.bom.map(b => ({ partTypeId: b.partTypeId, qty: Number(b.qty||0) })),
+          bom: action.bom.map(b => ({ partTypeId: b.partTypeId, qty: Number(b.qty||0), avgCost: b.avgCost !== undefined ? Number(b.avgCost) : undefined })),
         });
       } else if (action.type === "ASSEMBLY_START") {
         await api.assemblyStart({ productId: action.productId, qty: Number(action.qty||0), date: action.date || todayISO() });
@@ -3323,13 +3323,17 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     const partTypes = state?.partTypes || [];
     const defaultClass = partClasses[0]?.id || "";
     const defaultPartInClass = partTypes.find(t => t.classId === defaultClass)?.id || partTypes[0]?.id || "";
+    const defaultPart = partTypes.find(pt => pt.id === defaultPartInClass);
+    // For non-pcs items, set qty to 1 instead of 0
+    const defaultQty = (defaultPart && defaultPart.unit !== 'pcs') ? 1 : 0;
     setRows((x) => [
       ...x,
       {
         id: Math.random().toString(36).slice(2),
         classId: defaultClass,
         partTypeId: defaultPartInClass,
-        qty: 0,
+        qty: defaultQty,
+        avgCost: 0,
         note: "",
       },
     ]);
@@ -3342,7 +3346,13 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
   }
 
   const partById = (id) => (state?.partTypes || []).find((p) => p.id === id);
-  const cost = rows.reduce((s, r) => s + (state?.inventory?.[r.partTypeId]?.avgCost || 0) * Number(r.qty || 0), 0);
+  const cost = rows.reduce((s, r) => {
+    const part = partById(r.partTypeId);
+    const isNonPcs = part && part.unit !== 'pcs';
+    const avg = isNonPcs ? (r.avgCost || 0) : ((state?.inventory || {})[r.partTypeId]?.avgCost || 0);
+    const qty = isNonPcs ? Number(r.qty || 1) : Number(r.qty || 0);
+    return s + avg * qty;
+  }, 0);
 
   const [editingProductId, setEditingProductId] = useState(null);
   const [editProdName, setEditProdName] = useState("");
@@ -3357,7 +3367,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     setEditProdSuggested(p.suggestedPrice ?? "");
     setEditBom(p.bom.map(b => {
       const pt = partById(b.partTypeId);
-      return { id: b.id, classId: b.classId || pt?.classId || "", partTypeId: b.partTypeId, qty: Number(b.qty||0) };
+      return { id: b.id, classId: b.classId || pt?.classId || "", partTypeId: b.partTypeId, qty: Number(b.qty||0), avgCost: Number(b.avgCost||0) };
     }));
   }
   function cancelEditProduct() {
@@ -3368,8 +3378,11 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     const partClasses = state?.partClasses || [];
     const partTypes = state?.partTypes || [];
     const defaultClass = partClasses[0]?.id || "";
-    const defaultPart = partTypes.find(t=>t.classId===defaultClass)?.id || partTypes[0]?.id || "";
-    setEditBom(x => [...x, { id: Math.random().toString(36).slice(2), classId: defaultClass, partTypeId: defaultPart, qty: 0 }]);
+    const defaultPartId = partTypes.find(t=>t.classId===defaultClass)?.id || partTypes[0]?.id || "";
+    const defaultPart = partTypes.find(pt => pt.id === defaultPartId);
+    // For non-pcs items, set qty to 1 instead of 0
+    const defaultQty = (defaultPart && defaultPart.unit !== 'pcs') ? 1 : 0;
+    setEditBom(x => [...x, { id: Math.random().toString(36).slice(2), classId: defaultClass, partTypeId: defaultPartId, qty: defaultQty, avgCost: 0 }]);
   }
   function updateBomRow(id, patch) {
     setEditBom(x => x.map(r => r.id === id ? { ...r, ...patch } : r));
@@ -3378,9 +3391,19 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
 
   async function saveProductEdit(id) {
     try {
-      await api.updateProduct(id, { name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? undefined : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) });
+      // Validate: non-pcs items must have avgCost > 0
+      const invalidRows = editBom.filter(b => {
+        const part = (state?.partTypes || []).find(pt => pt.id === b.partTypeId);
+        const isNonPcs = part && part.unit !== 'pcs';
+        return isNonPcs && (!b.avgCost || b.avgCost <= 0);
+      });
+      if (invalidRows.length > 0) {
+        alert("Для не-штучних елементів обов'язково вкажіть середню собівартість!");
+        return;
+      }
+      await api.updateProduct(id, { name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? undefined : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0), avgCost: b.avgCost !== undefined ? Number(b.avgCost) : undefined })) });
       // optimistic
-      applyPartialState({ products: (state?.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) } : p) });
+      applyPartialState({ products: (state?.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0), avgCost: b.avgCost !== undefined ? Number(b.avgCost) : undefined })) } : p) });
       cancelEditProduct();
     } catch (e) { alert(String(e)); }
   }
@@ -3396,7 +3419,8 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
               <tbody>
                 {editBom.map(r => {
                   const part = (state?.partTypes || []).find(pt => pt.id === r.partTypeId);
-                  const avg = (state?.inventory || {})[r.partTypeId]?.avgCost || 0;
+                  const inventoryAvg = (state?.inventory || {})[r.partTypeId]?.avgCost || 0;
+                  const avg = r.avgCost !== undefined && r.avgCost !== null ? r.avgCost : inventoryAvg;
                   const isNonPcs = part && part.unit !== 'pcs';
                   return (
                     <tr key={r.id} className="odd:bg-white even:bg-gray-50">
@@ -3404,8 +3428,18 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                         <div className="relative">
                           <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.classId || ''} onChange={(e)=>{
                             const nextClass = e.target.value;
-                            const firstType = (state?.partTypes || []).find(t=>t.classId===nextClass)?.id || '';
-                            updateBomRow(r.id, { classId: nextClass, partTypeId: firstType });
+                            const firstType = (state?.partTypes || []).find(t=>t.classId===nextClass);
+                            const firstTypeId = firstType?.id || '';
+                            const patch = { classId: nextClass, partTypeId: firstTypeId };
+                            // Auto-set qty to 1 for non-pcs items when changing class
+                            if (firstType && firstType.unit !== 'pcs' && (r.qty === 0 || r.qty === undefined)) {
+                              patch.qty = 1;
+                            }
+                            // Reset avgCost when changing part type
+                            if (firstTypeId !== r.partTypeId) {
+                              patch.avgCost = 0;
+                            }
+                            updateBomRow(r.id, patch);
                           }}>
                             {(state?.partClasses || []).map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
                           </select>
@@ -3416,14 +3450,41 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                         <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.partTypeId} onChange={(e)=> {
                           const nextTypeId = e.target.value;
                           const t = (state?.partTypes || []).find(pt => pt.id === nextTypeId);
-                          updateBomRow(r.id, { partTypeId: nextTypeId, classId: t?.classId || r.classId });
+                          const patch = { partTypeId: nextTypeId, classId: t?.classId || r.classId };
+                          // Auto-set qty to 1 for non-pcs items, keep current qty for pcs items
+                          if (t && t.unit !== 'pcs' && (r.qty === 0 || r.qty === undefined)) {
+                            patch.qty = 1;
+                          }
+                          // Reset avgCost when changing part type
+                          if (nextTypeId !== r.partTypeId) {
+                            patch.avgCost = 0;
+                          }
+                          updateBomRow(r.id, patch);
                         }}>
                           {(state?.partTypes || []).filter(pt=> !r.classId || pt.classId===r.classId).map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
                         </select>
                       </td>
                       <td className="p-2">{isNonPcs ? '—' : (<NumberInput value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} />)}</td>
-                      <td className="p-2">{isNonPcs ? '—' : currency(avg)}</td>
-                      <td className="p-2 font-medium">{isNonPcs ? '—' : currency(avg * Number(r.qty || 0))}</td>
+                      <td className="p-2">
+                        {isNonPcs ? (
+                          <NumberInput
+                            value={String(r.avgCost || 0)}
+                            onChange={(v) => updateBomRow(r.id, { avgCost: Number(v) })}
+                            min={0}
+                            step={0.01}
+                            className={!r.avgCost || r.avgCost === 0 ? "border-red-300" : ""}
+                            placeholder="0.00"
+                          />
+                        ) : (
+                          currency(avg)
+                        )}
+                      </td>
+                      <td className="p-2 font-medium">
+                        {isNonPcs
+                          ? currency((r.avgCost || 0) * Number(r.qty || 1))
+                          : currency(avg * Number(r.qty || 0))
+                        }
+                      </td>
                       <td className="p-2"><TextInput value={r.note} onChange={(v)=> updateBomRow(r.id, { note: v })} placeholder="Нотатка" /></td>
                       <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeBomRow(r.id)}><Trash2 className="w-4 h-4"/></button></td>
                     </tr>
@@ -3434,7 +3495,13 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
           </div>
           <div className="flex items-center justify-between">
             <button className="rounded-xl border px-3 py-1 text-xs hover:bg-gray-50" onClick={addBomRow}><Plus className="w-4 h-4"/> Додати позицію</button>
-            <div className="text-xs">Орієнт.: <b>{currency(editBom.reduce((s,r)=> s + ((state?.inventory || {})[r.partTypeId]?.avgCost || 0) * Number(r.qty||0), 0))}</b></div>
+            <div className="text-xs">Орієнт.: <b>{currency(editBom.reduce((s,r)=> {
+              const part = (state?.partTypes || []).find(pt => pt.id === r.partTypeId);
+              const isNonPcs = part && part.unit !== 'pcs';
+              const avg = isNonPcs ? (r.avgCost || 0) : ((state?.inventory || {})[r.partTypeId]?.avgCost || 0);
+              const qty = isNonPcs ? Number(r.qty || 1) : Number(r.qty || 0);
+              return s + avg * qty;
+            }, 0))}</b></div>
           </div>
         </div>
       ) : (
@@ -3442,7 +3509,9 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
           {p.bom.map((b) => {
             const part = partById(b.partTypeId);
             const cls = part ? (state?.partClasses || []).find((c) => c.id === part.classId) : null;
-            const avg = (state?.inventory || {})[b.partTypeId]?.avgCost || 0;
+            const isNonPcs = part && part.unit !== 'pcs';
+            const avg = isNonPcs ? (b.avgCost || 0) : ((state?.inventory || {})[b.partTypeId]?.avgCost || 0);
+            const qty = isNonPcs ? (b.qty || 1) : b.qty;
             return (
               <div key={b.id} className="flex items-center gap-1">
                 {cls && (
@@ -3450,14 +3519,20 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                     {renderClassIcon(cls?.icon)} {cls?.name || part?.classId || '—'}
                   </span>
                 )}
-                <span>• {part?.name || "?"}: {b.qty} × {currency(avg)} = <b>{currency(avg * b.qty)}</b></span>
+                <span>• {part?.name || "?"}: {qty} × {currency(avg)} = <b>{currency(avg * qty)}</b></span>
               </div>
             );
           })}
         </div>
       )
     ) },
-    { key: "cost", header: "Орієнт. собівартість", cell: (p) => currency(p.bom.reduce((s, b) => s + ((state?.inventory || {})[b.partTypeId]?.avgCost || 0) * b.qty, 0)) },
+    { key: "cost", header: "Орієнт. собівартість", cell: (p) => currency(p.bom.reduce((s, b) => {
+      const part = partById(b.partTypeId);
+      const isNonPcs = part && part.unit !== 'pcs';
+      const avg = isNonPcs ? (b.avgCost || 0) : ((state?.inventory || {})[b.partTypeId]?.avgCost || 0);
+      const qty = isNonPcs ? (b.qty || 1) : b.qty;
+      return s + avg * qty;
+    }, 0)) },
     { key: "suggestedPrice", header: "Рекомендована ціна", cell: (p) => (
       editingProductId === p.id
         ? (<NumberInput className="w-28" value={editProdSuggested} onChange={setEditProdSuggested} min={0} />)
@@ -3518,8 +3593,10 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                 </thead>
                 <tbody>
                   {rows.map((r) => {
-                    const avg = (state?.inventory || {})[r.partTypeId]?.avgCost || 0;
+                    const inventoryAvg = (state?.inventory || {})[r.partTypeId]?.avgCost || 0;
+                    const avg = r.avgCost !== undefined && r.avgCost !== null ? r.avgCost : inventoryAvg;
                     const part = partById(r.partTypeId);
+                    const isNonPcs = part && part.unit !== 'pcs';
                     return (
                       <tr key={r.id} className="odd:bg-white even:bg-gray-50">
                       <td className="p-2">
@@ -3529,8 +3606,18 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                             value={r.classId || ""}
                             onChange={(e) => {
                               const nextClassId = e.target.value;
-                              const firstTypeInClass = (state?.partTypes || []).find(t => t.classId === nextClassId)?.id || "";
-                              updateRow(r.id, { classId: nextClassId, partTypeId: firstTypeInClass });
+                              const firstTypeInClass = (state?.partTypes || []).find(t => t.classId === nextClassId);
+                              const firstTypeId = firstTypeInClass?.id || "";
+                              const patch = { classId: nextClassId, partTypeId: firstTypeId };
+                              // Auto-set qty to 1 for non-pcs items when changing class
+                              if (firstTypeInClass && firstTypeInClass.unit !== 'pcs' && (r.qty === 0 || r.qty === undefined)) {
+                                patch.qty = 1;
+                              }
+                              // Reset avgCost when changing part type
+                              if (firstTypeId !== r.partTypeId) {
+                                patch.avgCost = 0;
+                              }
+                              updateRow(r.id, patch);
                             }}
                           >
                             {(state?.partClasses || []).map((c) => (
@@ -3544,7 +3631,20 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                         <select
                           className="w-full border rounded-xl px-2 py-1 bg-white"
                           value={r.partTypeId}
-                          onChange={(e) => updateRow(r.id, { partTypeId: e.target.value })}
+                          onChange={(e) => {
+                            const nextTypeId = e.target.value;
+                            const t = (state?.partTypes || []).find(pt => pt.id === nextTypeId);
+                            const patch = { partTypeId: nextTypeId };
+                            // Auto-set qty to 1 for non-pcs items, keep current qty for pcs items
+                            if (t && t.unit !== 'pcs' && (r.qty === 0 || r.qty === undefined)) {
+                              patch.qty = 1;
+                            }
+                            // Reset avgCost when changing part type
+                            if (nextTypeId !== r.partTypeId) {
+                              patch.avgCost = 0;
+                            }
+                            updateRow(r.id, patch);
+                          }}
                         >
                           {(state?.partTypes || [])
                             .filter((p) => !r.classId || p.classId === r.classId)
@@ -3554,9 +3654,27 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                         </select>
                         <div className="text-xs text-gray-500">Од.: {part?.unit || 'pcs'}</div>
                       </td>
-                        <td className="p-2">{part && part.unit !== 'pcs' ? '—' : (<NumberInput value={r.qty} onChange={(v) => updateRow(r.id, { qty: Number(v) })} />)}</td>
-                        <td className="p-2">{part && part.unit !== 'pcs' ? '—' : currency(avg)}</td>
-                        <td className="p-2 font-medium">{part && part.unit !== 'pcs' ? '—' : currency(avg * Number(r.qty || 0))}</td>
+                        <td className="p-2">{isNonPcs ? '—' : (<NumberInput value={r.qty} onChange={(v) => updateRow(r.id, { qty: Number(v) })} />)}</td>
+                        <td className="p-2">
+                          {isNonPcs ? (
+                            <NumberInput
+                              value={String(r.avgCost || 0)}
+                              onChange={(v) => updateRow(r.id, { avgCost: Number(v) })}
+                              min={0}
+                              step={0.01}
+                              className={!r.avgCost || r.avgCost === 0 ? "border-red-300" : ""}
+                              placeholder="0.00"
+                            />
+                          ) : (
+                            currency(avg)
+                          )}
+                        </td>
+                        <td className="p-2 font-medium">
+                          {isNonPcs
+                            ? currency((r.avgCost || 0) * Number(r.qty || 1))
+                            : currency(avg * Number(r.qty || 0))
+                          }
+                        </td>
                         <td className="p-2"><TextInput value={r.note} onChange={(v)=> updateRow(r.id, { note: v })} placeholder="Нотатка" /></td>
                         <td className="p-2"><button className="p-2 rounded-lg hover:bg-gray-100" onClick={() => removeRow(r.id)}><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
@@ -3576,7 +3694,22 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                 className="rounded-xl bg-gray-900 text-white px-4 py-2 ml-auto flex items-center gap-2"
                 onClick={() => {
                   if (!name.trim() || rows.length === 0) return;
-                  const valid = rows.every((r) => r.partTypeId && r.qty > 0);
+                  // Validate: non-pcs items must have avgCost > 0
+                  const invalidRows = rows.filter(r => {
+                    const part = partById(r.partTypeId);
+                    const isNonPcs = part && part.unit !== 'pcs';
+                    return isNonPcs && (!r.avgCost || r.avgCost <= 0);
+                  });
+                  if (invalidRows.length > 0) {
+                    alert("Для не-штучних елементів обов'язково вкажіть середню собівартість!");
+                    return;
+                  }
+                  const valid = rows.every((r) => {
+                    const part = partById(r.partTypeId);
+                    const isNonPcs = part && part.unit !== 'pcs';
+                    if (isNonPcs) return r.partTypeId && r.avgCost > 0;
+                    return r.partTypeId && r.qty > 0;
+                  });
                   if (!valid) return;
                   dispatch({ type: "ADD_PRODUCT", name, note, suggestedPrice, bom: rows });
                   setName(""); setNote(""); setSuggestedPrice(""); setRows([]);

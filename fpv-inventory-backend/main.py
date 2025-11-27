@@ -296,6 +296,7 @@ class ProductBOMItem(BaseModel):
     id: Optional[str] = None
     partTypeId: str
     qty: float
+    avgCost: Optional[float] = None
 
 class Product(BaseModel):
     id: Optional[str] = None
@@ -1075,14 +1076,16 @@ async def add_product(p: Product):
             d["id"] = str(ObjectId())
         pt_id = d.get("partTypeId")
         qty = float(d.get("qty", 0))
-        if not pt_id or qty <= 0:
+        if not pt_id or qty < 0:
             continue
         pt = await c_part_types.find_one({"_id": pt_id})
         if not pt:
             continue
-        d["classId"] = pt.get("classId")
-        d["qty"] = qty
-        norm_bom.append({"id": d["id"], "partTypeId": pt_id, "classId": d.get("classId"), "qty": qty})
+        cls_id = d.get("classId") or pt.get("classId")
+        avg_cost = d.get("avgCost")
+        if avg_cost is not None:
+            avg_cost = float(avg_cost)
+        norm_bom.append({"id": d["id"], "partTypeId": pt_id, "classId": cls_id, "qty": qty, "avgCost": avg_cost})
     payload["bom"] = norm_bom
     doc = ensure_id(payload)
     await c_products.insert_one(doc)
@@ -1114,13 +1117,16 @@ async def update_product(product_id: str, body: UpdateProductRequest):
                 d["id"] = str(ObjectId())
             pt_id = d.get("partTypeId")
             qty = float(d.get("qty", 0))
-            if not pt_id or qty <= 0:
+            if not pt_id or qty < 0:
                 continue
             pt = await c_part_types.find_one({"_id": pt_id})
             if not pt:
                 continue
             cls_id = d.get("classId") or pt.get("classId")
-            norm.append({"id": d["id"], "partTypeId": pt_id, "classId": cls_id, "qty": qty})
+            avg_cost = d.get("avgCost")
+            if avg_cost is not None:
+                avg_cost = float(avg_cost)
+            norm.append({"id": d["id"], "partTypeId": pt_id, "classId": cls_id, "qty": qty, "avgCost": avg_cost})
         patch["bom"] = norm
     if not patch:
         return {"ok": True}
