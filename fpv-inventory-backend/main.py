@@ -453,6 +453,43 @@ async def set_balance_rules(body: BalanceRules):
     await settings.update_one({"_id": "balance_rules"}, {"$set": payload}, upsert=True)
     return {"ok": True}
 
+# Inventory Rules (admin permissions for editing avgCost)
+class InventoryRules(BaseModel):
+    allowEditAvgCost: bool = False
+
+@app.get("/settings/inventory-rules")
+async def get_inventory_rules():
+    doc = await settings.find_one({"_id": "inventory_rules"})
+    return {
+        "allowEditAvgCost": bool((doc or {}).get("allowEditAvgCost", False)),
+    }
+
+@app.post("/settings/inventory-rules")
+async def set_inventory_rules(body: InventoryRules):
+    payload = {"_id": "inventory_rules", "allowEditAvgCost": bool(body.allowEditAvgCost)}
+    await settings.update_one({"_id": "inventory_rules"}, {"$set": payload}, upsert=True)
+    return {"ok": True}
+
+# Update inventory avgCost (admin only)
+class UpdateAvgCostRequest(BaseModel):
+    avgCost: float = Field(..., ge=0.01, description="Minimum avgCost is 0.01")
+
+@app.put("/inventory/{part_type_id}/avg-cost")
+async def update_inventory_avg_cost(part_type_id: str, body: UpdateAvgCostRequest):
+    rules = await settings.find_one({"_id": "inventory_rules"})
+    if not rules or not bool(rules.get("allowEditAvgCost", False)):
+        raise HTTPException(403, "Editing average cost is not allowed. Enable it in Settings.")
+    if body.avgCost < 0.01:
+        raise HTTPException(400, "Average cost must be at least 0.01")
+    cur = await c_inventory.find_one({"_id": part_type_id})
+    if not cur:
+        raise HTTPException(404, f"Inventory item not found: {part_type_id}")
+    await c_inventory.update_one(
+        {"_id": part_type_id},
+        {"$set": {"avgCost": float(body.avgCost)}}
+    )
+    return {"ok": True, "avgCost": body.avgCost}
+
 # Balance
 @app.get("/balance/entries")
 async def list_balance():

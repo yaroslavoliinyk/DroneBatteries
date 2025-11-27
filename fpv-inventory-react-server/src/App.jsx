@@ -179,7 +179,7 @@ export default function App() {
 
   useEffect(() => { refresh(); }, []);
   const balance = useMemo(() => {
-    if (!state) return 0;
+    if (!state || !state.balanceEntries || !Array.isArray(state.balanceEntries)) return 0;
     return state.balanceEntries.reduce((sum, e) => {
       if (e.type === "deposit" || e.type === "sale") return sum + Number(e.amount || 0);
       if (e.type === "withdrawal" || e.type === "purchase") return sum - Number(e.amount || 0);
@@ -305,6 +305,7 @@ function Stat({ label, value, icon: Icon }) {
 }
 function Tag({ children }) { return <span className="px-2 py-0.5 rounded-full text-xs bg-gray-100 border">{children}</span>; }
 function Table({ columns, rows, empty = "Немає даних", fixed = false }) {
+  const safeRows = Array.isArray(rows) ? rows : [];
   return (
     <div className="overflow-x-auto border rounded-2xl bg-white">
       <table className={`min-w-full w-full text-sm ${fixed ? 'table-fixed' : ''}`}>
@@ -314,9 +315,9 @@ function Table({ columns, rows, empty = "Немає даних", fixed = false }
           ))}</tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
+          {safeRows.length === 0 ? (
             <tr><td className="p-4 text-center text-gray-500" colSpan={columns.length}>{empty}</td></tr>
-          ) : rows.map((r, i) => (
+          ) : safeRows.map((r, i) => (
             <tr key={r.id || i} className="odd:bg-white even:bg-gray-50">
               {columns.map((c) => (
                 <td key={c.key} className={`p-3 border-b align-top break-words whitespace-normal ${c.tdClass || ''}`}>
@@ -415,7 +416,7 @@ function OrdersTable({ state }) {
   const openOrders = (sales||[]).filter(s => !s.allocated);
   const cols = [
     { key: 'date', header: 'Дата' },
-    { key: 'product', header: 'Продукт', cell: (r)=> state.products.find(p=>p.id===r.productId)?.name || r.productId },
+    { key: 'product', header: 'Продукт', cell: (r)=> (state?.products || []).find(p=>p.id===r.productId)?.name || r.productId },
     { key: 'qty', header: 'К-сть' },
     { key: 'price', header: 'Ціна за од.', cell: (r)=> currency(r.pricePerUnit) },
     { key: 'total', header: 'Сума', cell: (r)=> <b>{currency(r.total)}</b> },
@@ -559,7 +560,7 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
   const [showAddClass, setShowAddClass] = useState(false);
   const [ptName, setPtName] = useState("");
   const [ptUnit, setPtUnit] = useState("pcs");
-  const [ptClassId, setPtClassId] = useState(state.partClasses[0]?.id || "");
+  const [ptClassId, setPtClassId] = useState((state?.partClasses || [])[0]?.id || "");
   const [ptSupplierId, setPtSupplierId] = useState("");
   const [ptNote, setPtNote] = useState("");
   const [showAddType, setShowAddType] = useState(false);
@@ -1085,8 +1086,8 @@ function PartsView({ state, dispatch, applyPartialState, onOpenSupplier }) {
         {showAddType && (
           <div className="grid md:grid-cols-6 gap-3">
             <Select value={ptClassId} onChange={setPtClassId}>
-              {state.partClasses.length === 0 && <option value="">Спочатку додайте клас</option>}
-              {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+              {(!state?.partClasses || state.partClasses.length === 0) && <option value="">Спочатку додайте клас</option>}
+              {(state?.partClasses || []).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
             </Select>
             <TextInput value={ptName} onChange={setPtName} placeholder="Напр., Tenpower 40T, Нікель 8мм" />
             <TextInput value={ptUnit} onChange={setPtUnit} placeholder="Одиниця (pcs/m/cm)" />
@@ -1660,9 +1661,12 @@ function CustomersView({ state, refresh, applyPartialState }) {
     setLoading(true);
     try {
       const [list, sum] = await Promise.all([api.listCustomers(), api.customersSummary()]);
-      setRows(list);
-      setSummary(sum);
-    } catch (_) {}
+      setRows(Array.isArray(list) ? list : []);
+      setSummary(Array.isArray(sum) ? sum : []);
+    } catch (_) {
+      setRows([]);
+      setSummary([]);
+    }
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
@@ -1704,7 +1708,7 @@ function CustomersView({ state, refresh, applyPartialState }) {
     )},
     { key: 'purchases', header: 'Куплені продукти', cell: (r)=> {
       const s = summary.find(x=> (x.customer||'').trim() === (r.name||'').trim());
-      if (!s) return '—';
+      if (!s || !s.items || !Array.isArray(s.items)) return '—';
       return (
         <div className="text-xs text-gray-700 space-y-1">
           {s.items.map(it => (
@@ -1823,7 +1827,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     if (!id) return;
     // optimistic UI: apply local edits and exit edit mode immediately
     applyPartialState({
-      purchases: state.purchases.map(p => p.id === id ? {
+      purchases: (state?.purchases || []).map(p => p.id === id ? {
         ...p,
         vendor: editVendor,
         date: editDate,
@@ -1858,7 +1862,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     setEditCosts(x => x.filter(c => c.id !== id));
   }
 
-  const partById = (id) => state.partTypes.find((p) => p.id === id);
+  const partById = (id) => (state?.partTypes || []).find((p) => p.id === id);
 
   function calcTotals(p) {
     const itemsTotal = p.items.reduce((s, it) => s + Number(it.qty || 0) * Number(it.unitCost || 0), 0);
@@ -1868,7 +1872,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }
 
   const filteredPurchases = useMemo(() => {
-    let rows = showArchived ? archivedPurchases : state.purchases;
+    let rows = showArchived ? archivedPurchases : (state?.purchases || []);
 
     // Status filters (services are considered delivered for filtering purposes)
     rows = rows.filter((r) => {
@@ -1944,11 +1948,11 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
     if (serviceFilter === "services") chips.push("Послуги");
     if (serviceFilter === "goods") chips.push("Товари");
     if (classFilter) {
-      const name = state.partClasses.find((c) => c.id === classFilter)?.name || classFilter;
+      const name = (state?.partClasses || []).find((c) => c.id === classFilter)?.name || classFilter;
       chips.push(`Клас: ${name}`);
     }
     if (typeFilter) {
-      const name = state.partTypes.find((t) => t.id === typeFilter)?.name || typeFilter;
+      const name = (state?.partTypes || []).find((t) => t.id === typeFilter)?.name || typeFilter;
       chips.push(`Вид: ${name}`);
     }
     if (dateFrom) chips.push(`З: ${dateFrom}`);
@@ -2031,8 +2035,9 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   }, 0);
 
   function addRow() {
-    const defaultClass = state.partClasses[0]?.id || "";
-    const defaultType = state.partTypes.find(t => t.classId === defaultClass)?.id || state.partTypes[0]?.id || "";
+    const defaultClass = (state?.partClasses || [])[0]?.id || "";
+    const partTypes = state?.partTypes || [];
+    const defaultType = partTypes.find(t => t.classId === defaultClass)?.id || partTypes[0]?.id || "";
     setItems((x) => [
       ...x,
       {
@@ -2097,7 +2102,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
         <div className="text-sm text-gray-700 space-y-3">
           {r.items.map((it) => {
             const part = partById(it.partTypeId);
-            const partClass = part ? state.partClasses.find((c) => c.id === part.classId) : null;
+            const partClass = part ? (state?.partClasses || []).find((c) => c.id === part.classId) : null;
             const baseValue = Number(it.qty || 0) * Number(it.unitCost || 0);
             const share = itemsTotal > 0 ? (baseValue / itemsTotal) * costsTotal : 0;
             const effectiveUnit = Number(it.qty || 0) > 0 ? (Number(it.unitCost || 0) + share / Number(it.qty || 0)) : Number(it.unitCost || 0);
@@ -2240,7 +2245,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                 const next = e.target.checked;
                 const prev = !!r.isService;
                 // Оптимістичне оновлення UI конкретного рядка
-                applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: next } : p) });
+                applyPartialState({ purchases: (state?.purchases || []).map(p => p.id === r.id ? { ...p, isService: next } : p) });
                 try {
                   await api.toggleService(r.id, next);
                   // Швидко оновимо інвентар і залишки продуктів (без повного state)
@@ -2248,7 +2253,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                   applyPartialState({ inventory: s.inventory, productStock: s.productStock });
                 } catch (err) {
                   // Відкотимо оптимістичну зміну при помилці
-                  applyPartialState({ purchases: state.purchases.map(p => p.id === r.id ? { ...p, isService: prev } : p) });
+                  applyPartialState({ purchases: (state?.purchases || []).map(p => p.id === r.id ? { ...p, isService: prev } : p) });
                   alert(String(err));
                 }
               }}
@@ -2303,7 +2308,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
               if (!confirm('Видалити закупку? Дію не можна скасувати.')) return;
               try {
                 await api.deletePurchase(r.id);
-                applyPartialState({ purchases: state.purchases.filter(p => p.id !== r.id) });
+                applyPartialState({ purchases: (state?.purchases || []).filter(p => p.id !== r.id) });
                 const s = await api.getState();
                 applyPartialState({ inventory: s.inventory, productStock: s.productStock, balanceEntries: s.balanceEntries });
               } catch (e) {
@@ -2326,7 +2331,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                   applyPartialState({ purchases: s.purchases });
                 } else {
                   // Remove from active list, will appear in archived
-                  applyPartialState({ purchases: state.purchases.filter(p => p.id !== r.id) });
+                  applyPartialState({ purchases: (state?.purchases || []).filter(p => p.id !== r.id) });
                 }
               } catch (e) {
                 alert(String(e));
@@ -2379,7 +2384,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
   return (
     <div className="space-y-2">
       <Section title="" icon={ShoppingCart}>
-        {state.partTypes.length === 0 ? (
+        {!state?.partTypes || state.partTypes.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку додайте <b>Види деталей</b>.</div>
         ) : (
           <div className="grid gap-3">
@@ -2442,10 +2447,10 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                           ) : (
                             <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.classId} onChange={(e) => {
                               const nextClass = e.target.value;
-                              const firstType = state.partTypes.find(t => t.classId === nextClass)?.id || "";
+                              const firstType = (state?.partTypes || []).find(t => t.classId === nextClass)?.id || "";
                               updateRow(row.tempId, { classId: nextClass, partTypeId: firstType });
                             }}>
-                              {state.partClasses.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                              {(state?.partClasses || []).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
                             </select>
                           )}
                         </td>
@@ -2454,7 +2459,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                             <span className="text-gray-400">—</span>
                           ) : (
                             <select className="w-full border rounded-xl px-2 py-1 bg-white" value={row.partTypeId} onChange={(e) => updateRow(row.tempId, { partTypeId: e.target.value })}>
-                              {state.partTypes.filter(p => !row.classId || p.classId === row.classId).map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                              {(state?.partTypes || []).filter(p => !row.classId || p.classId === row.classId).map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
                             </select>
                           )}
                         </td>
@@ -2464,8 +2469,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                               const isService = e.target.checked;
                               updateRow(row.tempId, {
                                 isService,
-                                classId: isService ? "" : (row.classId || state.partClasses[0]?.id || ""),
-                                partTypeId: isService ? "" : (row.partTypeId || state.partTypes.find(t=>t.classId === (row.classId || state.partClasses[0]?.id || ""))?.id || ""),
+                                classId: isService ? "" : (row.classId || (state?.partClasses || [])[0]?.id || ""),
+                                partTypeId: isService ? "" : (row.partTypeId || (state?.partTypes || []).find(t=>t.classId === (row.classId || (state?.partClasses || [])[0]?.id || ""))?.id || ""),
                                 // clear pricing fields appropriately
                                 qty: isService ? 0 : (row.qty || 0),
                                 unitCost: isService ? 0 : (row.unitCost || 0),
@@ -2673,7 +2678,7 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
                 <div className="text-xs text-gray-500 mb-1">Клас</div>
                 <Select value={classFilter} onChange={(v) => { setClassFilter(v); setTypeFilter(""); }}>
                   <option value="">Всі</option>
-                  {state.partClasses.map((c) => (
+                  {(state?.partClasses || []).map((c) => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </Select>
@@ -2823,8 +2828,8 @@ function PurchasesView({ state, dispatch, refresh, applyPartialState }) {
 }
 
 function InventoryView({ state, dispatch, applyPartialState }) {
-  const partById = (id) => state.partTypes.find((p) => p.id === id);
-  const classById = (id) => state.partClasses.find((c) => c.id === id);
+  const partById = (id) => (state?.partTypes || []).find((p) => p.id === id);
+  const classById = (id) => (state?.partClasses || []).find((c) => c.id === id);
   // Build rows for ALL part types, even if qty = 0 (no inventory yet)
   const rows = (state.partTypes || []).map((pt) => {
     const inv = (state.inventory || {})[pt.id] || {};
@@ -2842,6 +2847,11 @@ function InventoryView({ state, dispatch, applyPartialState }) {
   const [selClassIds, setSelClassIds] = useState([]);
   const [selTypeIds, setSelTypeIds] = useState([]);
 
+  // Admin permission for editing avgCost
+  const [allowEditAvgCost, setAllowEditAvgCost] = useState(false);
+  const [editingAvgCostId, setEditingAvgCostId] = useState(null);
+  const [editAvgCostValue, setEditAvgCostValue] = useState("");
+
   // Load presets from server on mount
   useEffect(() => {
     (async () => {
@@ -2851,8 +2861,35 @@ function InventoryView({ state, dispatch, applyPartialState }) {
         setSelClassIds(Array.isArray(saved.classIds) ? saved.classIds : []);
         setSelTypeIds(Array.isArray(saved.typeIds) ? saved.typeIds : []);
       } catch(_) {}
+      try {
+        const rules = await api.getInventoryRules();
+        setAllowEditAvgCost(!!rules.allowEditAvgCost);
+      } catch(_) {}
     })();
   }, []);
+
+  async function saveAvgCost(partTypeId) {
+    const value = parseFloat(editAvgCostValue);
+    if (isNaN(value) || value < 0.01) {
+      alert("Сер. собівартість повинна бути мінімум 0.01");
+      return;
+    }
+    try {
+      await api.updateInventoryAvgCost(partTypeId, value);
+      // Optimistic update
+      const newInventory = { ...(state.inventory || {}) };
+      if (newInventory[partTypeId]) {
+        newInventory[partTypeId] = { ...newInventory[partTypeId], avgCost: value };
+      } else {
+        newInventory[partTypeId] = { qty: 0, avgCost: value };
+      }
+      applyPartialState({ inventory: newInventory });
+      setEditingAvgCostId(null);
+      setEditAvgCostValue("");
+    } catch (e) {
+      alert(String(e));
+    }
+  }
 
   // Persist to server on change
   useEffect(() => {
@@ -2908,7 +2945,53 @@ function InventoryView({ state, dispatch, applyPartialState }) {
     { key: "avgCost", header: "Сер. собівартість", cell: (r) => {
       const part = partById(r.partTypeId);
       if (part && part.unit !== 'pcs') return '—';
-      return currency(r.avgCost);
+
+      // Editing mode
+      if (editingAvgCostId === r.partTypeId) {
+        return (
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              className="border rounded-lg px-2 py-1 w-24 text-sm"
+              value={editAvgCostValue}
+              onChange={(e) => setEditAvgCostValue(e.target.value)}
+              min={0.01}
+              step={0.01}
+              autoFocus
+            />
+            <button
+              className="p-1 rounded-lg bg-green-100 text-green-700 hover:bg-green-200"
+              onClick={() => saveAvgCost(r.partTypeId)}
+              title="Зберегти"
+            >
+              <Save className="w-4 h-4" />
+            </button>
+            <button
+              className="p-1 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200"
+              onClick={() => { setEditingAvgCostId(null); setEditAvgCostValue(""); }}
+              title="Скасувати"
+            >
+              ✕
+            </button>
+          </div>
+        );
+      }
+
+      // Display mode with edit button if allowed
+      return (
+        <div className="flex items-center gap-1">
+          <span>{currency(r.avgCost)}</span>
+          {allowEditAvgCost && r.qty > 0 && (
+            <button
+              className="p-1 rounded-lg hover:bg-amber-100 text-amber-600"
+              onClick={() => { setEditingAvgCostId(r.partTypeId); setEditAvgCostValue(String(r.avgCost || 0.01)); }}
+              title="Редагувати сер. собівартість"
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      );
     } },
     { key: "total", header: "Сума", cell: (r) => {
       const part = partById(r.partTypeId);
@@ -2967,19 +3050,21 @@ function InventoryView({ state, dispatch, applyPartialState }) {
     { key: "name", header: "Продукт" },
     { key: "qty", header: "Кількість на складі" },
   ];
-  const prodRows = Object.entries(state.productStock).map(([pid, q]) => ({ id: pid, name: state.products.find((p) => p.id === pid)?.name || "?", qty: q }));
+  const prodRows = Object.entries(state?.productStock || {}).map(([pid, q]) => ({ id: pid, name: (state?.products || []).find((p) => p.id === pid)?.name || "?", qty: q }));
 
   const totalValue = filteredRows.reduce((s, r) => s + r.qty * r.avgCost, 0);
   const [showStockLog, setShowStockLog] = useState(false);
   const [stockLog, setStockLog] = useState({ columns: [], rows: [], page: 1, pageSize: 10, total: 0 });
   const [showWriteoff, setShowWriteoff] = useState(false);
   const [showReplenish, setShowReplenish] = useState(false);
-  const [woClassId, setWoClassId] = useState(state.partClasses[0]?.id || "");
-  const [woPartId, setWoPartId] = useState(state.partTypes.find(t=>t.classId=== (state.partClasses[0]?.id||""))?.id || state.partTypes[0]?.id || "");
+  const [woClassId, setWoClassId] = useState((state?.partClasses || [])[0]?.id || "");
+  const partClasses = state?.partClasses || [];
+  const partTypes = state?.partTypes || [];
+  const [woPartId, setWoPartId] = useState(partTypes.find(t=>t.classId=== (partClasses[0]?.id||""))?.id || partTypes[0]?.id || "");
   const [woQty, setWoQty] = useState(0);
   const [woReason, setWoReason] = useState("");
-  const [rpClassId, setRpClassId] = useState(state.partClasses[0]?.id || "");
-  const [rpPartId, setRpPartId] = useState(state.partTypes.find(t=>t.classId=== (state.partClasses[0]?.id||""))?.id || state.partTypes[0]?.id || "");
+  const [rpClassId, setRpClassId] = useState((state?.partClasses || [])[0]?.id || "");
+  const [rpPartId, setRpPartId] = useState(partTypes.find(t=>t.classId=== (partClasses[0]?.id||""))?.id || partTypes[0]?.id || "");
   const [rpQty, setRpQty] = useState(0);
   const [rpReason, setRpReason] = useState("");
 
@@ -3092,14 +3177,14 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             <div className="grid md:grid-cols-5 gap-3 items-end">
               <div>
                 <div className="text-xs text-gray-500 mb-1">Клас</div>
-                <Select value={woClassId} onChange={(v)=> { setWoClassId(v); setWoPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
-                  {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                <Select value={woClassId} onChange={(v)=> { setWoClassId(v); setWoPartId((state?.partTypes || []).find(t=>t.classId===v)?.id || ""); }}>
+                  {(state?.partClasses || []).map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
                 </Select>
               </div>
               <div>
                 <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
                 <Select value={woPartId} onChange={setWoPartId}>
-                  {state.partTypes.filter(t=> !woClassId || t.classId===woClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
+                  {(state?.partTypes || []).filter(t=> !woClassId || t.classId===woClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
                 </Select>
               </div>
               <div>
@@ -3125,14 +3210,14 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             <div className="grid md:grid-cols-5 gap-3 items-end">
               <div>
                 <div className="text-xs text-gray-500 mb-1">Клас</div>
-                <Select value={rpClassId} onChange={(v)=> { setRpClassId(v); setRpPartId(state.partTypes.find(t=>t.classId===v)?.id || ""); }}>
-                  {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                <Select value={rpClassId} onChange={(v)=> { setRpClassId(v); setRpPartId((state?.partTypes || []).find(t=>t.classId===v)?.id || ""); }}>
+                  {(state?.partClasses || []).map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
                 </Select>
               </div>
               <div>
                 <div className="text-xs text-gray-500 mb-1">Вид деталі</div>
                 <Select value={rpPartId} onChange={setRpPartId}>
-                  {state.partTypes.filter(t=> !rpClassId || t.classId===rpClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
+                  {(state?.partTypes || []).filter(t=> !rpClassId || t.classId===rpClassId).map(t=> (<option key={t.id} value={t.id}>{t.name}</option>))}
                 </Select>
               </div>
               <div>
@@ -3153,7 +3238,7 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             </div>
           </div>
         )}
-        
+
         {/* Multi-select filters */}
         <div className="mb-3 p-3 rounded-2xl border bg-white shadow-sm">
           <div className="grid gap-3 md:grid-cols-3">
@@ -3174,12 +3259,12 @@ function InventoryView({ state, dispatch, applyPartialState }) {
                 items={(() => {
                   const allowedClassIds = new Set(
                     selProductIds.length === 0
-                      ? state.partClasses.map(c=>c.id)
-                      : (state.products||[])
+                      ? (state?.partClasses || []).map(c=>c.id)
+                      : (state?.products||[])
                           .filter(p=> selProductIds.includes(p.id))
-                          .flatMap(p => (p.bom||[]).map(b => state.partTypes.find(t=>t.id===b.partTypeId)?.classId).filter(Boolean))
+                          .flatMap(p => (p.bom||[]).map(b => (state?.partTypes || []).find(t=>t.id===b.partTypeId)?.classId).filter(Boolean))
                   );
-                  return state.partClasses.filter(c=> allowedClassIds.has(c.id)).map(c => ({ id: c.id, name: c.name }));
+                  return (state?.partClasses || []).filter(c=> allowedClassIds.has(c.id)).map(c => ({ id: c.id, name: c.name }));
                 })()}
                 selected={selClassIds}
                 onToggle={(id, checked)=> setSelClassIds(ids => checked ? [...new Set([...ids, id])] : ids.filter(x=>x!==id))}
@@ -3192,9 +3277,9 @@ function InventoryView({ state, dispatch, applyPartialState }) {
                 label={selTypeIds.length > 0 ? `Обрано: ${selTypeIds.length}` : 'Всі'}
                 items={(() => {
                   const allowedTypes = new Set(
-                    selClassIds.length === 0 ? state.partTypes.map(t=>t.id) : state.partTypes.filter(t=> selClassIds.includes(t.classId)).map(t=>t.id)
+                    selClassIds.length === 0 ? (state?.partTypes || []).map(t=>t.id) : (state?.partTypes || []).filter(t=> selClassIds.includes(t.classId)).map(t=>t.id)
                   );
-                  return state.partTypes.filter(t=> allowedTypes.has(t.id)).map(t => ({ id: t.id, name: t.name }));
+                  return (state?.partTypes || []).filter(t=> allowedTypes.has(t.id)).map(t => ({ id: t.id, name: t.name }));
                 })()}
                 selected={selTypeIds}
                 onToggle={(id, checked)=> setSelTypeIds(ids => checked ? [...new Set([...ids, id])] : ids.filter(x=>x!==id))}
@@ -3209,11 +3294,11 @@ function InventoryView({ state, dispatch, applyPartialState }) {
             )}
           </div>
         </div>
-        
-        
+
+
         <Table columns={cols} rows={filteredRows} empty="Порожньо" />
       </Section>
-      
+
     </div>
   );
 }
@@ -3234,8 +3319,10 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
   }
 
   function addRow() {
-    const defaultClass = state.partClasses[0]?.id || "";
-    const defaultPartInClass = state.partTypes.find(t => t.classId === defaultClass)?.id || state.partTypes[0]?.id || "";
+    const partClasses = state?.partClasses || [];
+    const partTypes = state?.partTypes || [];
+    const defaultClass = partClasses[0]?.id || "";
+    const defaultPartInClass = partTypes.find(t => t.classId === defaultClass)?.id || partTypes[0]?.id || "";
     setRows((x) => [
       ...x,
       {
@@ -3254,8 +3341,8 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     setRows((x) => x.filter((r) => r.id !== id));
   }
 
-  const partById = (id) => state.partTypes.find((p) => p.id === id);
-  const cost = rows.reduce((s, r) => s + (state.inventory[r.partTypeId]?.avgCost || 0) * Number(r.qty || 0), 0);
+  const partById = (id) => (state?.partTypes || []).find((p) => p.id === id);
+  const cost = rows.reduce((s, r) => s + (state?.inventory?.[r.partTypeId]?.avgCost || 0) * Number(r.qty || 0), 0);
 
   const [editingProductId, setEditingProductId] = useState(null);
   const [editProdName, setEditProdName] = useState("");
@@ -3278,8 +3365,10 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     setEditProdName(""); setEditProdNote(""); setEditProdSuggested(""); setEditBom([]);
   }
   function addBomRow() {
-    const defaultClass = state.partClasses[0]?.id || "";
-    const defaultPart = state.partTypes.find(t=>t.classId===defaultClass)?.id || state.partTypes[0]?.id || "";
+    const partClasses = state?.partClasses || [];
+    const partTypes = state?.partTypes || [];
+    const defaultClass = partClasses[0]?.id || "";
+    const defaultPart = partTypes.find(t=>t.classId===defaultClass)?.id || partTypes[0]?.id || "";
     setEditBom(x => [...x, { id: Math.random().toString(36).slice(2), classId: defaultClass, partTypeId: defaultPart, qty: 0 }]);
   }
   function updateBomRow(id, patch) {
@@ -3291,7 +3380,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
     try {
       await api.updateProduct(id, { name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? undefined : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) });
       // optimistic
-      applyPartialState({ products: (state.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) } : p) });
+      applyPartialState({ products: (state?.products||[]).map(p => p.id === id ? { ...p, name: editProdName, note: editProdNote, suggestedPrice: editProdSuggested === "" ? p.suggestedPrice : Number(editProdSuggested), bom: editBom.map(b => ({ id: b.id, classId: b.classId, partTypeId: b.partTypeId, qty: Number(b.qty||0) })) } : p) });
       cancelEditProduct();
     } catch (e) { alert(String(e)); }
   }
@@ -3306,8 +3395,8 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
               <thead className="bg-gray-50"><tr><th className="p-2 text-left">Клас</th><th className="p-2 text-left">Деталь</th><th className="p-2 text-left">К-сть</th><th className="p-2 text-left">Сер. собівартість</th><th className="p-2 text-left">Внесок</th><th className="p-2 text-left">—</th></tr></thead>
               <tbody>
                 {editBom.map(r => {
-                  const part = state.partTypes.find(pt => pt.id === r.partTypeId);
-                  const avg = state.inventory[r.partTypeId]?.avgCost || 0;
+                  const part = (state?.partTypes || []).find(pt => pt.id === r.partTypeId);
+                  const avg = (state?.inventory || {})[r.partTypeId]?.avgCost || 0;
                   const isNonPcs = part && part.unit !== 'pcs';
                   return (
                     <tr key={r.id} className="odd:bg-white even:bg-gray-50">
@@ -3315,21 +3404,21 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                         <div className="relative">
                           <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.classId || ''} onChange={(e)=>{
                             const nextClass = e.target.value;
-                            const firstType = state.partTypes.find(t=>t.classId===nextClass)?.id || '';
+                            const firstType = (state?.partTypes || []).find(t=>t.classId===nextClass)?.id || '';
                             updateBomRow(r.id, { classId: nextClass, partTypeId: firstType });
                           }}>
-                            {state.partClasses.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                            {(state?.partClasses || []).map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
                           </select>
-                          {(() => { const cls = state.partClasses.find(c=>c.id===r.classId); return cls ? (<div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">{renderClassIcon(cls.icon)}</div>) : null; })()}
+                          {(() => { const cls = (state?.partClasses || []).find(c=>c.id===r.classId); return cls ? (<div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">{renderClassIcon(cls.icon)}</div>) : null; })()}
                         </div>
                       </td>
                       <td className="p-2">
                         <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.partTypeId} onChange={(e)=> {
                           const nextTypeId = e.target.value;
-                          const t = state.partTypes.find(pt => pt.id === nextTypeId);
+                          const t = (state?.partTypes || []).find(pt => pt.id === nextTypeId);
                           updateBomRow(r.id, { partTypeId: nextTypeId, classId: t?.classId || r.classId });
                         }}>
-                          {state.partTypes.filter(pt=> !r.classId || pt.classId===r.classId).map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
+                          {(state?.partTypes || []).filter(pt=> !r.classId || pt.classId===r.classId).map(pt => (<option key={pt.id} value={pt.id}>{pt.name}</option>))}
                         </select>
                       </td>
                       <td className="p-2">{isNonPcs ? '—' : (<NumberInput value={r.qty} onChange={(v)=> updateBomRow(r.id, { qty: Number(v) })} />)}</td>
@@ -3345,15 +3434,15 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
           </div>
           <div className="flex items-center justify-between">
             <button className="rounded-xl border px-3 py-1 text-xs hover:bg-gray-50" onClick={addBomRow}><Plus className="w-4 h-4"/> Додати позицію</button>
-            <div className="text-xs">Орієнт.: <b>{currency(editBom.reduce((s,r)=> s + (state.inventory[r.partTypeId]?.avgCost || 0) * Number(r.qty||0), 0))}</b></div>
+            <div className="text-xs">Орієнт.: <b>{currency(editBom.reduce((s,r)=> s + ((state?.inventory || {})[r.partTypeId]?.avgCost || 0) * Number(r.qty||0), 0))}</b></div>
           </div>
         </div>
       ) : (
         <div className="text-sm text-gray-700 space-y-1">
           {p.bom.map((b) => {
             const part = partById(b.partTypeId);
-            const cls = part ? state.partClasses.find((c) => c.id === part.classId) : null;
-            const avg = state.inventory[b.partTypeId]?.avgCost || 0;
+            const cls = part ? (state?.partClasses || []).find((c) => c.id === part.classId) : null;
+            const avg = (state?.inventory || {})[b.partTypeId]?.avgCost || 0;
             return (
               <div key={b.id} className="flex items-center gap-1">
                 {cls && (
@@ -3368,7 +3457,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
         </div>
       )
     ) },
-    { key: "cost", header: "Орієнт. собівартість", cell: (p) => currency(p.bom.reduce((s, b) => s + (state.inventory[b.partTypeId]?.avgCost || 0) * b.qty, 0)) },
+    { key: "cost", header: "Орієнт. собівартість", cell: (p) => currency(p.bom.reduce((s, b) => s + ((state?.inventory || {})[b.partTypeId]?.avgCost || 0) * b.qty, 0)) },
     { key: "suggestedPrice", header: "Рекомендована ціна", cell: (p) => (
       editingProductId === p.id
         ? (<NumberInput className="w-28" value={editProdSuggested} onChange={setEditProdSuggested} min={0} />)
@@ -3385,7 +3474,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
           <button className="p-2 rounded-lg border hover:bg-gray-50" title="Редагувати" onClick={()=> startEditProduct(p)}><Pencil className="w-4 h-4"/></button>
           <button className="p-2 rounded-lg border text-red-700 hover:bg-red-50 border-red-300" title="Видалити" onClick={async ()=>{
             if (!confirm('Видалити продукт?')) return;
-            try { await api.deleteProduct(p.id); applyPartialState({ products: (state.products||[]).filter(x=>x.id!==p.id) }); } catch(e){ alert(String(e)); }
+            try { await api.deleteProduct(p.id); applyPartialState({ products: (state?.products||[]).filter(x=>x.id!==p.id) }); } catch(e){ alert(String(e)); }
           }}><Trash2 className="w-4 h-4"/></button>
         </div>
       )
@@ -3404,7 +3493,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
           </button>
         </div>
       )}>
-        {!showAddProduct ? null : state.partTypes.length === 0 ? (
+        {!showAddProduct ? null : !state?.partTypes || state.partTypes.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку додайте <b>Види деталей</b>.</div>
         ) : (
           <div className="grid gap-3">
@@ -3429,7 +3518,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                 </thead>
                 <tbody>
                   {rows.map((r) => {
-                    const avg = state.inventory[r.partTypeId]?.avgCost || 0;
+                    const avg = (state?.inventory || {})[r.partTypeId]?.avgCost || 0;
                     const part = partById(r.partTypeId);
                     return (
                       <tr key={r.id} className="odd:bg-white even:bg-gray-50">
@@ -3440,15 +3529,15 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                             value={r.classId || ""}
                             onChange={(e) => {
                               const nextClassId = e.target.value;
-                              const firstTypeInClass = state.partTypes.find(t => t.classId === nextClassId)?.id || "";
+                              const firstTypeInClass = (state?.partTypes || []).find(t => t.classId === nextClassId)?.id || "";
                               updateRow(r.id, { classId: nextClassId, partTypeId: firstTypeInClass });
                             }}
                           >
-                            {state.partClasses.map((c) => (
+                            {(state?.partClasses || []).map((c) => (
                               <option key={c.id} value={c.id}>{c.name}</option>
                             ))}
                           </select>
-                          {(() => { const cls = state.partClasses.find(c=>c.id===r.classId); return cls ? (<div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">{renderClassIcon(cls.icon)}</div>) : null; })()}
+                          {(() => { const cls = (state?.partClasses || []).find(c=>c.id===r.classId); return cls ? (<div className="absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none">{renderClassIcon(cls.icon)}</div>) : null; })()}
                         </div>
                       </td>
                       <td className="p-2">
@@ -3457,7 +3546,7 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
                           value={r.partTypeId}
                           onChange={(e) => updateRow(r.id, { partTypeId: e.target.value })}
                         >
-                          {state.partTypes
+                          {(state?.partTypes || [])
                             .filter((p) => !r.classId || p.classId === r.classId)
                             .map((p) => (
                               <option key={p.id} value={p.id}>{p.name}</option>
@@ -3501,14 +3590,14 @@ function ProductsView({ state, dispatch, refresh, applyPartialState }) {
       </Section>
 
       <Section title="Список продуктів" icon={Boxes}>
-        <Table columns={prodCols} rows={state.products} empty="Ще немає продуктів" />
+        <Table columns={prodCols} rows={state?.products || []} empty="Ще немає продуктів" />
       </Section>
     </div>
   );
 }
 
 function AssemblyView({ state, dispatch }) {
-  const [productId, setProductId] = useState(state.products[0]?.id || "");
+  const [productId, setProductId] = useState((state?.products || [])[0]?.id || "");
   const [qty, setQty] = useState(1);
   const [date, setDate] = useState(todayISO());
 
@@ -3521,15 +3610,15 @@ function AssemblyView({ state, dispatch }) {
     return <IconComp className="w-4 h-4" />;
   }
 
-  const product = state.products.find((p) => p.id === productId);
+  const product = (state?.products || []).find((p) => p.id === productId);
   const canAssemble = React.useMemo(() => {
     if (!product) return false;
     return (product.bom || []).every((b) => {
-      const pt = state.partTypes.find((p) => p.id === b.partTypeId);
+      const pt = (state?.partTypes || []).find((p) => p.id === b.partTypeId);
       if (!pt) return false;
       const unit = pt.unit || 'pcs';
       if (unit === 'pcs') {
-        const have = Number(state.inventory[b.partTypeId]?.qty || 0);
+        const have = Number((state?.inventory || {})[b.partTypeId]?.qty || 0);
         const need = Number(b.qty || 0) * Number(qty || 0);
         return have >= need;
       } else {
@@ -3538,17 +3627,17 @@ function AssemblyView({ state, dispatch }) {
         return invStatus !== 'none';
       }
     });
-  }, [product, state.inventory, state.partTypes, qty]);
+  }, [product, state?.inventory, state?.partTypes, qty]);
 
   return (
     <div className="space-y-6">
       <Section title="Збірка продукту" icon={Factory}>
-        {state.products.length === 0 ? (
+        {!state?.products || state.products.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку створіть <b>Продукт (BOM)</b>.</div>
         ) : (
           <div className="grid md:grid-cols-4 gap-3 items-end">
             <Select value={productId} onChange={setProductId}>
-              {state.products.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+              {(state?.products || []).map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
             </Select>
             <NumberInput value={qty} onChange={setQty} min={1} placeholder="Кількість" />
             <input type="date" className="border rounded-xl px-3 py-2" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -3587,10 +3676,10 @@ function AssemblyView({ state, dispatch }) {
               ) },
             ]}
             rows={product.bom.map((b) => {
-              const pt = state.partTypes.find((p) => p.id === b.partTypeId);
-              const cls = state.partClasses.find((c) => c.id === pt?.classId);
+              const pt = (state?.partTypes || []).find((p) => p.id === b.partTypeId);
+              const cls = (state?.partClasses || []).find((c) => c.id === pt?.classId);
               const unit = (pt?.unit) || 'pcs';
-              const haveQty = state.inventory[b.partTypeId]?.qty || 0;
+              const haveQty = (state?.inventory || {})[b.partTypeId]?.qty || 0;
               const needQty = b.qty * qty;
               // Map inventory status the same way as in InventoryView
               const invStatus = (()=>{
@@ -3630,7 +3719,7 @@ function AssemblyView({ state, dispatch }) {
         <Table
           columns={[
             { key: 'date', header: 'Дата' },
-            { key: 'product', header: 'Продукт', cell: (a) => state.products.find(p=>p.id===a.productId)?.name || '?' },
+            { key: 'product', header: 'Продукт', cell: (a) => (state?.products || []).find(p=>p.id===a.productId)?.name || '?' },
             { key: 'qty', header: 'К-сть' },
             { key: 'status', header: 'Статус', cell: (a) => (a.status === 'completed' ? 'Зібрано' : 'Не зібрано') },
             { key: 'actions', header: '—', cell: (a) => (
@@ -3695,8 +3784,9 @@ function SalesView({ state, dispatch, applyPartialState }) {
   }
 
   function addSaleRow() {
-    const pid = state.products[0]?.id || "";
-    const suggested = state.products.find(p=>p.id===pid)?.suggestedPrice ?? 0;
+    const products = state?.products || [];
+    const pid = products[0]?.id || "";
+    const suggested = products.find(p=>p.id===pid)?.suggestedPrice ?? 0;
     setSaleRows(x => [...x, { id: Math.random().toString(36).slice(2), productId: pid, qty: 1, pricePerUnit: Number(suggested)||0, taxExempt: false }]);
   }
   function updateSaleRow(id, patch) { setSaleRows(x => x.map(r => r.id === id ? { ...r, ...patch } : r)); }
@@ -3710,7 +3800,7 @@ function SalesView({ state, dispatch, applyPartialState }) {
 
   const cols = [
     { key: "date", header: "Дата" },
-    { key: "product", header: "Продукт", cell: (s) => state.products.find((p) => p.id === s.productId)?.name || "?" },
+    { key: "product", header: "Продукт", cell: (s) => (state?.products || []).find((p) => p.id === s.productId)?.name || "?" },
     { key: "qty", header: "К-сть" },
     { key: "price", header: "Ціна за од.", cell: (s) => currency(s.pricePerUnit) },
     { key: "total", header: "Сума", cell: (s) => <b>{currency(s.total)}</b> },
@@ -3721,7 +3811,7 @@ function SalesView({ state, dispatch, applyPartialState }) {
   return (
     <div className="space-y-6">
       <Section title="Нове замовлення" icon={DollarSign}>
-        {state.products.length === 0 ? (
+        {!state?.products || state.products.length === 0 ? (
           <div className="p-4 border rounded-xl bg-yellow-50">Спочатку створіть <b>Продукт</b> та зберіть його.</div>
         ) : saleRows.length === 0 ? (
           <div className="flex items-center justify-end py-2">
@@ -3754,16 +3844,16 @@ function SalesView({ state, dispatch, applyPartialState }) {
                 </thead>
                 <tbody>
                   {saleRows.map(r => {
-                    const stock = state.productStock[r.productId] || 0;
+                    const stock = (state?.productStock || {})[r.productId] || 0;
                     return (
                       <tr key={r.id} className="odd:bg-white even:bg-gray-50">
                         <td className="p-2">
                           <select className="w-full border rounded-xl px-2 py-1 bg-white" value={r.productId} onChange={(e)=>{
                             const pid = e.target.value;
-                            const suggested = state.products.find(p=>p.id===pid)?.suggestedPrice ?? r.pricePerUnit;
+                            const suggested = (state?.products || []).find(p=>p.id===pid)?.suggestedPrice ?? r.pricePerUnit;
                             updateSaleRow(r.id, { productId: pid, pricePerUnit: Number(suggested)||0 });
                           }}>
-                            {state.products.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                            {(state?.products || []).map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
                           </select>
                         </td>
                         <td className="p-2"><NumberInput className="w-24" value={r.qty} onChange={(v)=> updateSaleRow(r.id, { qty: Number(v) })} min={1} step={1} /></td>
@@ -3837,9 +3927,9 @@ function SalesView({ state, dispatch, applyPartialState }) {
             { key: "product", header: "Продукт", cell: (s) => (
               editingSaleId === s.id ? (
                 <select className="w-full border rounded-xl px-2 py-1 bg-white" value={editSale.productId} onChange={(e)=> setEditSale(v=>({ ...v, productId: e.target.value }))}>
-                  {state.products.map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                  {(state?.products || []).map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
                 </select>
-              ) : (state.products.find((p) => p.id === s.productId)?.name || "?")
+              ) : ((state?.products || []).find((p) => p.id === s.productId)?.name || "?")
             ) },
             { key: "qty", header: "К-сть", cell: (s) => (
               editingSaleId === s.id ? (
@@ -3991,7 +4081,7 @@ function SalesView({ state, dispatch, applyPartialState }) {
               </div>
             )},
           ];
-          const rows = showArchived ? archivedSales : state.sales;
+          const rows = showArchived ? archivedSales : (state?.sales || []);
           return <Table columns={colsOrders} rows={rows} empty={showArchived ? 'Архів порожній' : 'Замовлень поки немає'} />;
         })()}
       </Section>
@@ -4002,7 +4092,11 @@ function SalesView({ state, dispatch, applyPartialState }) {
 function SettingsView({ state, dispatch, serverMode }) {
   const [allowDeleteBalance, setAllowDeleteBalance] = useState(false);
   const [allowAddBalance, setAllowAddBalance] = useState(true);
-  useEffect(() => { api.getBalanceRules().then(r=> { setAllowDeleteBalance(!!r.allowDelete); setAllowAddBalance(r.allowAdd !== false); }).catch(()=>{}); }, []);
+  const [allowEditAvgCost, setAllowEditAvgCost] = useState(false);
+  useEffect(() => {
+    api.getBalanceRules().then(r=> { setAllowDeleteBalance(!!r.allowDelete); setAllowAddBalance(r.allowAdd !== false); }).catch(()=>{});
+    api.getInventoryRules().then(r=> { setAllowEditAvgCost(!!r.allowEditAvgCost); }).catch(()=>{});
+  }, []);
   async function toggleAllowDeleteBalance() {
     try {
       const next = !allowDeleteBalance;
@@ -4015,6 +4109,13 @@ function SettingsView({ state, dispatch, serverMode }) {
       const next = !allowAddBalance;
       await api.setBalanceRules({ allowDelete: allowDeleteBalance, allowAdd: next });
       setAllowAddBalance(next);
+    } catch(e){ alert(String(e)); }
+  }
+  async function toggleAllowEditAvgCost() {
+    try {
+      const next = !allowEditAvgCost;
+      await api.setInventoryRules({ allowEditAvgCost: next });
+      setAllowEditAvgCost(next);
     } catch(e){ alert(String(e)); }
   }
   async function exportJSON() {
@@ -4084,6 +4185,10 @@ function SettingsView({ state, dispatch, serverMode }) {
         <label className="inline-flex items-center gap-2 text-sm border rounded-xl px-3 py-2">
           <input type="checkbox" className="scale-110" checked={allowAddBalance} onChange={toggleAllowAddBalance} />
           Дозволити додавання записів балансу
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm border rounded-xl px-3 py-2 border-amber-300 bg-amber-50">
+          <input type="checkbox" className="scale-110" checked={allowEditAvgCost} onChange={toggleAllowEditAvgCost} />
+          Дозволити редагування сер. собівартості
         </label>
       </div>
       <div className="text-sm text-gray-500">

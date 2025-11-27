@@ -76,6 +76,10 @@ export const api = {
   setInventoryFilters: (o) => http("POST", "/settings/inventory-filters", o),
   getBalanceRules: () => http("GET", "/settings/balance-rules"),
   setBalanceRules: (o) => http("POST", "/settings/balance-rules", o),
+  getInventoryRules: () => http("GET", "/settings/inventory-rules"),
+  setInventoryRules: (o) => http("POST", "/settings/inventory-rules", o),
+  // Inventory avgCost update
+  updateInventoryAvgCost: (partTypeId, avgCost) => http("PUT", `/inventory/${partTypeId}/avg-cost`, { avgCost }),
   // Customers
   listCustomers: () => http("GET", "/customers"),
   addCustomer: (o) => http("POST", "/customers", o),
