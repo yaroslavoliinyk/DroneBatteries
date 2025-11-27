@@ -1,10 +1,65 @@
 # Database Migrations
 
-This directory contains database migration scripts.
+This directory contains database migration and snapshot management scripts.
 
-## Available Migrations
+## 📸 Database Snapshots (003_snapshot.py)
 
-### 002_copy_to_stage.py
+**Create snapshots before deploying to protect your data!**
+
+### Quick Start
+
+```bash
+# Create snapshot before deploy
+docker exec -it fpv-backend python migrations/003_snapshot.py create
+
+# Create snapshot with description
+docker exec -it fpv-backend python migrations/003_snapshot.py create --name "before_feature_x"
+
+# List all snapshots
+docker exec -it fpv-backend python migrations/003_snapshot.py list
+
+# Restore from snapshot (if something goes wrong)
+docker exec -it fpv-backend python migrations/003_snapshot.py restore <snapshot_name>
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `create` | Create a new snapshot |
+| `create -n "name"` | Create snapshot with custom name |
+| `list` | List all available snapshots |
+| `restore <name>` | Restore database from snapshot |
+| `delete <name>` | Delete a specific snapshot |
+| `cleanup --days 30` | Delete snapshots older than 30 days |
+
+### Shell Script Wrapper
+
+```bash
+# Or use the shell script wrapper
+./migrations/snapshot.sh create
+./migrations/snapshot.sh create -n "before_deploy_v2"
+./migrations/snapshot.sh list
+./migrations/snapshot.sh restore fpv_snap_20251127_143000
+```
+
+### Example Workflow (Before Deploy)
+
+```bash
+# 1. Create snapshot
+docker exec -it fpv-backend python migrations/003_snapshot.py create --name "pre_deploy_$(date +%Y%m%d)"
+
+# 2. Deploy your changes
+git push origin develop
+
+# 3. If something breaks, restore:
+docker exec -it fpv-backend python migrations/003_snapshot.py restore <snapshot_name>
+```
+
+---
+
+## 🔄 Copy Production to Stage (002_copy_to_stage.py)
+
 Copies all data from `fpv_inventory` database to `fpv_inventory_stage` database.
 
 **Usage:**

@@ -2981,7 +2981,7 @@ function InventoryView({ state, dispatch, applyPartialState }) {
       return (
         <div className="flex items-center gap-1">
           <span>{currency(r.avgCost)}</span>
-          {allowEditAvgCost && r.qty > 0 && (
+          {allowEditAvgCost && (
             <button
               className="p-1 rounded-lg hover:bg-amber-100 text-amber-600"
               onClick={() => { setEditingAvgCostId(r.partTypeId); setEditAvgCostValue(String(r.avgCost || 0.01)); }}

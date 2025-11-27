@@ -486,12 +486,11 @@ async def update_inventory_avg_cost(part_type_id: str, body: UpdateAvgCostReques
         raise HTTPException(403, "Editing average cost is not allowed. Enable it in Settings.")
     if body.avgCost < 0.01:
         raise HTTPException(400, "Average cost must be at least 0.01")
-    cur = await c_inventory.find_one({"_id": part_type_id})
-    if not cur:
-        raise HTTPException(404, f"Inventory item not found: {part_type_id}")
+    # Upsert: create inventory item if it doesn't exist, update avgCost if it does
     await c_inventory.update_one(
         {"_id": part_type_id},
-        {"$set": {"avgCost": float(body.avgCost)}}
+        {"$set": {"id": part_type_id, "avgCost": float(body.avgCost)}, "$setOnInsert": {"qty": 0}},
+        upsert=True
     )
     return {"ok": True, "avgCost": body.avgCost}
 
