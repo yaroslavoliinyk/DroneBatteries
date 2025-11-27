@@ -20,7 +20,7 @@ services:
       - "8000:8000"
     environment:
       - MONGODB_URI=${MONGODB_URI:-mongodb://mongo:27017}
-      - DB_NAME=${DB_NAME:-fpv_inventory}
+      - DB_NAME=${DB_NAME}
       - FRONTEND_ORIGIN=${FRONTEND_ORIGIN:-http://localhost:3000}
     volumes:
       - ./fpv-inventory-backend:/app

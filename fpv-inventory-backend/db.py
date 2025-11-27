@@ -2,13 +2,16 @@ import os
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
+
 load_dotenv()
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "fpv_inventory")
+DB_NAME = os.getenv("DB_NAME", "fpv_inventory_stage")
 
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client[DB_NAME]
+
+# import debugpy; print("Waiting for debugger on port 5687"); debugpy.listen(5687); debugpy.wait_for_client()
 
 # Collections
 c_balance = db["balance_entries"]

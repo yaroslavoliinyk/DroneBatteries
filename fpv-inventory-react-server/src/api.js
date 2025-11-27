@@ -1,10 +1,11 @@
 // src/api.js
 // Prefer same-origin by default. If someone accidentally builds with localhost,
 // auto-correct to same-origin in production.
-const configuredBase = (import.meta.env && import.meta.env.VITE_API_BASE) || "";
+const configuredBase = (import.meta.env && import.meta.env.VITE_API_BASE);
 const isBrowser = typeof window !== "undefined";
-const looksLikeLocalhost = (u) => typeof u === "string" && u.startsWith("http://localhost:");
-const API_BASE = (isBrowser && looksLikeLocalhost(configuredBase)) ? "" : configuredBase;
+// Default to localhost:8000 in development if not specified, otherwise same-origin
+const defaultBase = (isBrowser && window.location.hostname === "localhost") ? "http://localhost:8000" : "";
+const API_BASE = configuredBase !== undefined ? configuredBase : defaultBase;
 
 async function http(method, url, body) {
   const res = await fetch(`${API_BASE}${url}`, {

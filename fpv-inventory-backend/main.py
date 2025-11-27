@@ -1,4 +1,6 @@
 import os
+import logging
+
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -28,10 +30,13 @@ from db import (
 )
 from bson import ObjectId
 
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "fpv_inventory")
+DB_NAME = os.getenv("DB_NAME", "fpv_inventory_stage")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
 
 app = FastAPI(title="FPV Inventory API")
@@ -1562,7 +1567,7 @@ async def on_startup():
     # На _id індекс створювати НЕ потрібно — він вже існує і є унікальним
     # await c_inventory.create_index("_id", unique=True)      # ✗ (забрати)
     # await c_product_stock.create_index("_id", unique=True)  # ✗ (забрати)
-
+    logger.info("Balance documents: %s", await c_balance.count_documents({}))
     # Звичайні індекси для сортування/запитів
     await c_purchases.create_index("date")
     await c_sales.create_index([("date", -1)])

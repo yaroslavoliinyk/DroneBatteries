@@ -38,11 +38,11 @@ A comprehensive inventory management system for FPV drone batteries built with F
    ```bash
    cp env.example .env
    ```
-   
+
    Edit `.env` file with your MongoDB Atlas URI:
    ```env
    MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/
-   DB_NAME=fpv_inventory
+   DB_NAME=fpv_inventory_stage
    FRONTEND_ORIGIN=http://localhost:3000
    VITE_API_BASE=http://localhost:8000
    ```
@@ -154,15 +154,15 @@ The backend provides the following main endpoints:
 
 ### Common Issues
 
-1. **"Failed to fetch" Error**: 
+1. **"Failed to fetch" Error**:
    - Check if backend is running: `docker compose logs backend`
    - Verify API connection: http://localhost:8000/state
 
-2. **Empty Data**: 
+2. **Empty Data**:
    - Ensure MongoDB Atlas URI is correct in `.env` file
    - Check database connection in backend logs
 
-3. **Port Conflicts**: 
+3. **Port Conflicts**:
    - Make sure ports 8000 and 3000 are available
    - Check if other services are using these ports
 
@@ -182,7 +182,7 @@ docker compose logs frontend
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MONGODB_URI` | MongoDB Atlas connection string | `mongodb+srv://root:4556@cluster0.a1fqoim.mongodb.net/` |
-| `DB_NAME` | Database name | `fpv_inventory` |
+| `DB_NAME` | Database name | `fpv_inventory_stage` |
 | `FRONTEND_ORIGIN` | Frontend URL for CORS | `http://localhost:3000` |
 | `VITE_API_BASE` | Backend API URL | `http://localhost:8000` |
 
