@@ -63,6 +63,8 @@ export const api = {
   deleteSale: (id) => http("DELETE", `/sales/${id}`),
   rebuild: () => http("POST", "/maintenance/rebuild"),
   fixPurchaseTotals: () => http("POST", "/maintenance/fix-purchase-totals"),
+  inventoryCheck: () => http("GET", "/maintenance/inventory-check"),
+  fixNegativeValues: () => http("POST", "/maintenance/fix-negative-values"),
   // Manual stock ops + log
   writeoff: (o) => http("POST", "/stock/writeoff", o),
   replenish: (o) => http("POST", "/stock/replenish", o),

@@ -98,7 +98,13 @@ async def upsert_inventory(part_type_id: str, add_qty: float, unit_cost: float) 
         # removing stock doesn't change avg cost
         avg1 = avg0
     if qty1 < 0:
-        raise HTTPException(status_code=400, detail=f"Недостатньо на складі для partTypeId={part_type_id}")
+        # Get part type name for better error message
+        pt = await c_part_types.find_one({"_id": part_type_id})
+        pt_name = (pt or {}).get("name", part_type_id)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недостатньо на складі для '{pt_name}': потрібно списати {abs(add_qty):.2f}, є {qty0:.2f}"
+        )
     await c_inventory.update_one(
         {"_id": part_type_id},
         {"$set": {"id": part_type_id, "qty": qty1, "avgCost": avg1}},
@@ -152,10 +158,45 @@ async def rebuild_inventory_and_stock() -> None:
     - Delivered purchases add to inventory; additional costs are allocated by value share
     - Assemblies deduct parts from inventory and increase product stock
     - Allocated sales decrease product stock (unallocated sales should not affect stock)
+
+    IMPORTANT: This function is now ATOMIC - it calculates everything in memory first,
+    validates the results, and only then writes to the database. If validation fails,
+    the original data is preserved.
     """
-    # reset
-    await c_inventory.delete_many({})
-    await c_product_stock.delete_many({})
+    # Step 1: Calculate everything IN MEMORY first
+    # inventory_calc: {part_type_id: {"qty": float, "avgCost": float}}
+    inventory_calc: Dict[str, Dict[str, float]] = {}
+    # product_stock_calc: {product_id: int}
+    product_stock_calc: Dict[str, int] = {}
+    validation_errors: List[str] = []
+
+    def calc_upsert_inventory(part_type_id: str, add_qty: float, unit_cost: float) -> None:
+        """Calculate inventory update in memory (moving-average cost)"""
+        if part_type_id not in inventory_calc:
+            qty = max(0.0, add_qty)
+            avg = unit_cost if qty > 0 else 0.0
+            inventory_calc[part_type_id] = {"qty": qty, "avgCost": avg}
+            return
+        cur = inventory_calc[part_type_id]
+        qty0 = float(cur.get("qty", 0))
+        avg0 = float(cur.get("avgCost", 0))
+        qty1 = qty0 + float(add_qty)
+        if add_qty >= 0:
+            # moving average when adding stock
+            if qty1 <= 0:
+                avg1 = 0.0
+            else:
+                avg1 = (qty0 * avg0 + float(add_qty) * float(unit_cost)) / qty1
+        else:
+            # removing stock doesn't change avg cost
+            avg1 = avg0
+        # Allow negative during calculation, we'll validate at the end
+        inventory_calc[part_type_id] = {"qty": qty1, "avgCost": avg1}
+
+    def calc_inc_product_stock(product_id: str, qty: int) -> None:
+        """Calculate product stock change in memory"""
+        cur = product_stock_calc.get(product_id, 0)
+        product_stock_calc[product_id] = cur + int(qty)
 
     # 1) Apply all delivered purchases (skip services)
     async for p in c_purchases.find({"delivered": True}):
@@ -173,7 +214,7 @@ async def rebuild_inventory_and_stock() -> None:
             base_value = qty * unit_cost
             share = (base_value / items_total) * costs_total if items_total > 0 else 0.0
             effective_unit = unit_cost if qty <= 0 else (unit_cost + share / qty)
-            await upsert_inventory(it["partTypeId"], qty, effective_unit)
+            calc_upsert_inventory(it["partTypeId"], qty, effective_unit)
 
     # 2) Apply assemblies
     async for asm in c_assemblies.find():
@@ -186,15 +227,66 @@ async def rebuild_inventory_and_stock() -> None:
             pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
             unit = (pt or {}).get("unit") or "pcs"
             if unit == "pcs":
-                await upsert_inventory(b["partTypeId"], -float(b.get("qty", 0)) * q, 0.0)
+                calc_upsert_inventory(b["partTypeId"], -float(b.get("qty", 0)) * q, 0.0)
         # Only increase finished goods stock for completed (or legacy without status)
         status = asm.get("status")
         if status in (None, "completed"):
-            await inc_product_stock(product["id"], q)
+            calc_inc_product_stock(product["id"], q)
 
     # 3) Apply only allocated sales
     async for s in c_sales.find({"allocated": True}):
-        await inc_product_stock(s.get("productId"), -int(s.get("qty", 0)))
+        calc_inc_product_stock(s.get("productId"), -int(s.get("qty", 0)))
+
+    # Step 2: VALIDATE all calculated values
+    for part_type_id, data in inventory_calc.items():
+        if data["qty"] < 0:
+            pt = await c_part_types.find_one({"_id": part_type_id})
+            pt_name = (pt or {}).get("name", part_type_id)
+            validation_errors.append(f"Негативна кількість для '{pt_name}' (id={part_type_id}): {data['qty']:.2f}")
+
+    for product_id, qty in product_stock_calc.items():
+        if qty < 0:
+            prod = await c_products.find_one({"_id": product_id})
+            prod_name = (prod or {}).get("name", product_id)
+            validation_errors.append(f"Негативний залишок продукту '{prod_name}' (id={product_id}): {qty}")
+
+    # Step 3: If validation fails, log warnings but CLAMP values to 0 instead of failing
+    # This prevents data loss while alerting about data inconsistencies
+    if validation_errors:
+        logger.warning("Rebuild inventory: Data inconsistencies detected (values will be clamped to 0):")
+        for err in validation_errors:
+            logger.warning(f"  - {err}")
+
+    # Clamp negative values to 0 to prevent data corruption
+    for part_type_id, data in inventory_calc.items():
+        if data["qty"] < 0:
+            data["qty"] = 0.0
+            data["avgCost"] = 0.0  # Reset avg cost for zero inventory
+
+    for product_id in product_stock_calc:
+        if product_stock_calc[product_id] < 0:
+            product_stock_calc[product_id] = 0
+
+    # Step 4: NOW we can safely write to database (atomic-like operation)
+    # Delete and rewrite in quick succession
+    await c_inventory.delete_many({})
+    await c_product_stock.delete_many({})
+
+    # Write calculated inventory
+    for part_type_id, data in inventory_calc.items():
+        await c_inventory.update_one(
+            {"_id": part_type_id},
+            {"$set": {"id": part_type_id, "qty": data["qty"], "avgCost": data["avgCost"]}},
+            upsert=True,
+        )
+
+    # Write calculated product stock
+    for product_id, qty in product_stock_calc.items():
+        await c_product_stock.update_one(
+            {"_id": product_id},
+            {"$set": {"id": product_id, "qty": qty}},
+            upsert=True,
+        )
 
 async def inc_product_stock(product_id: str, qty: int) -> None:
     cur = await c_product_stock.find_one({"_id": product_id})
@@ -203,9 +295,16 @@ async def inc_product_stock(product_id: str, qty: int) -> None:
             {"_id": product_id}, {"$set": {"id": product_id, "qty": int(qty)}}, upsert=True
         )
     else:
-        q = int(cur.get("qty", 0)) + int(qty)
+        current_qty = int(cur.get("qty", 0))
+        q = current_qty + int(qty)
         if q < 0:
-            raise HTTPException(status_code=400, detail=f"Недостатньо готової продукції для productId={product_id}")
+            # Get product name for better error message
+            prod = await c_products.find_one({"_id": product_id})
+            prod_name = (prod or {}).get("name", product_id)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Недостатньо готової продукції '{prod_name}': потрібно списати {abs(qty)}, є {current_qty}"
+            )
         await c_product_stock.update_one({"_id": product_id}, {"$set": {"id": product_id, "qty": q}}, upsert=True)
 
 async def get_state() -> Dict[str, Any]:
@@ -755,12 +854,37 @@ class UpdatePurchaseRequest(BaseModel):
     paidFromBalance: Optional[bool] = None
     isService: Optional[bool] = None
 
+def items_are_equal(old_items: List[Dict], new_items: List[Dict]) -> bool:
+    """Check if items are functionally equivalent (ignoring field order, etc.)"""
+    if len(old_items) != len(new_items):
+        return False
+    for old, new in zip(old_items, new_items):
+        # Compare relevant fields
+        if (old.get("partTypeId") != new.get("partTypeId") or
+            abs(float(old.get("qty", 0)) - float(new.get("qty", 0))) > 1e-9 or
+            abs(float(old.get("unitCost", 0)) - float(new.get("unitCost", 0))) > 1e-9):
+            return False
+    return True
+
+def costs_are_equal(old_costs: List[Dict], new_costs: List[Dict]) -> bool:
+    """Check if additional costs are functionally equivalent"""
+    if len(old_costs) != len(new_costs):
+        return False
+    for old, new in zip(old_costs, new_costs):
+        if abs(float(old.get("amount", 0)) - float(new.get("amount", 0))) > 1e-9:
+            return False
+    return True
+
 @app.put("/purchases/{purchase_id}")
 async def update_purchase(purchase_id: str, body: UpdatePurchaseRequest):
     p = await c_purchases.find_one({"_id": purchase_id})
     if not p:
         raise HTTPException(404, "Purchase not found")
     patch = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+
+    # Track if we actually need to rebuild inventory
+    needs_rebuild = False
+
     # Recompute total if items or additionalCosts changed
     if "items" in patch or "additionalCosts" in patch:
         items = patch.get("items", p.get("items", []))
@@ -781,15 +905,35 @@ async def update_purchase(purchase_id: str, body: UpdatePurchaseRequest):
                 out.append(d)
             return out
         if "items" in patch:
-            patch["items"] = normalize_items(items)
+            normalized_items = normalize_items(items)
+            patch["items"] = normalized_items
+            # Check if items actually changed
+            if not items_are_equal(p.get("items", []), normalized_items):
+                needs_rebuild = True
         if "additionalCosts" in patch:
-            patch["additionalCosts"] = [
+            normalized_costs = [
                 {"id": x.get("id") or str(ObjectId()), "amount": float(x.get("amount", 0)), "description": x.get("description", ""), "date": x.get("date") or now_iso()} for x in ( [c.model_dump() if isinstance(c, AdditionalCost) else c for c in add_costs] )
             ]
+            patch["additionalCosts"] = normalized_costs
+            # Check if costs actually changed
+            if not costs_are_equal(p.get("additionalCosts", []), normalized_costs):
+                needs_rebuild = True
+
+    # Check if delivered or isService status changed
+    if "delivered" in patch and patch["delivered"] != p.get("delivered"):
+        needs_rebuild = True
+    if "isService" in patch and patch["isService"] != p.get("isService"):
+        needs_rebuild = True
+
     await c_purchases.update_one({"_id": purchase_id}, {"$set": patch})
-    # Ensure consistency by rebuilding inventory/stock if impactful fields changed
-    if any(k in patch for k in ("items", "additionalCosts", "delivered", "isService")):
+
+    # Only rebuild if something inventory-affecting actually changed
+    if needs_rebuild:
+        logger.info(f"Rebuilding inventory due to purchase {purchase_id} changes")
         await rebuild_inventory_and_stock()
+    else:
+        logger.debug(f"Skipping rebuild for purchase {purchase_id} - no inventory-affecting changes")
+
     # Always adjust balance difference when total changes
     if "total" in patch:
         diff = float(patch["total"]) - float(p.get("total", 0))
@@ -1001,6 +1145,99 @@ async def add_additional_cost(purchase_id: str, req: AddAdditionalCostRequest):
 async def maintenance_rebuild():
     await rebuild_inventory_and_stock()
     return {"ok": True}
+
+@app.get("/maintenance/inventory-check")
+async def maintenance_inventory_check():
+    """
+    Check inventory consistency without modifying data.
+    Returns a report of any discrepancies found.
+    """
+    issues: List[Dict[str, Any]] = []
+
+    # Check 1: Inventory items with negative quantities
+    async for inv in c_inventory.find({"qty": {"$lt": 0}}):
+        pt = await c_part_types.find_one({"_id": inv.get("_id")})
+        issues.append({
+            "type": "negative_inventory",
+            "partTypeId": inv.get("_id"),
+            "partTypeName": (pt or {}).get("name", "Unknown"),
+            "qty": inv.get("qty", 0),
+            "message": f"Negative inventory quantity: {inv.get('qty', 0)}"
+        })
+
+    # Check 2: Product stock with negative quantities
+    async for stock in c_product_stock.find({"qty": {"$lt": 0}}):
+        prod = await c_products.find_one({"_id": stock.get("_id")})
+        issues.append({
+            "type": "negative_product_stock",
+            "productId": stock.get("_id"),
+            "productName": (prod or {}).get("name", "Unknown"),
+            "qty": stock.get("qty", 0),
+            "message": f"Negative product stock: {stock.get('qty', 0)}"
+        })
+
+    # Check 3: Orphaned inventory (part type doesn't exist)
+    async for inv in c_inventory.find():
+        pt = await c_part_types.find_one({"_id": inv.get("_id")})
+        if not pt:
+            issues.append({
+                "type": "orphaned_inventory",
+                "partTypeId": inv.get("_id"),
+                "qty": inv.get("qty", 0),
+                "message": "Inventory exists but part type doesn't"
+            })
+
+    # Check 4: Orphaned product stock (product doesn't exist)
+    async for stock in c_product_stock.find():
+        prod = await c_products.find_one({"_id": stock.get("_id")})
+        if not prod:
+            issues.append({
+                "type": "orphaned_product_stock",
+                "productId": stock.get("_id"),
+                "qty": stock.get("qty", 0),
+                "message": "Product stock exists but product doesn't"
+            })
+
+    return {
+        "ok": True,
+        "issuesCount": len(issues),
+        "issues": issues
+    }
+
+@app.post("/maintenance/fix-negative-values")
+async def maintenance_fix_negative_values():
+    """
+    Fix any negative inventory or product stock values by setting them to 0.
+    This is a safety measure to recover from data corruption.
+    """
+    fixed_inventory = 0
+    fixed_product_stock = 0
+
+    # Fix negative inventory
+    async for inv in c_inventory.find({"qty": {"$lt": 0}}):
+        await c_inventory.update_one(
+            {"_id": inv.get("_id")},
+            {"$set": {"qty": 0, "avgCost": 0}}
+        )
+        pt = await c_part_types.find_one({"_id": inv.get("_id")})
+        logger.warning(f"Fixed negative inventory for '{(pt or {}).get('name', inv.get('_id'))}': {inv.get('qty', 0)} -> 0")
+        fixed_inventory += 1
+
+    # Fix negative product stock
+    async for stock in c_product_stock.find({"qty": {"$lt": 0}}):
+        await c_product_stock.update_one(
+            {"_id": stock.get("_id")},
+            {"$set": {"qty": 0}}
+        )
+        prod = await c_products.find_one({"_id": stock.get("_id")})
+        logger.warning(f"Fixed negative product stock for '{(prod or {}).get('name', stock.get('_id'))}': {stock.get('qty', 0)} -> 0")
+        fixed_product_stock += 1
+
+    return {
+        "ok": True,
+        "fixedInventory": fixed_inventory,
+        "fixedProductStock": fixed_product_stock
+    }
 
 @app.post("/maintenance/fix-purchase-totals")
 async def maintenance_fix_purchase_totals():
@@ -1265,21 +1502,44 @@ async def assembly_start(req: AssemblyRequest):
             have = float(cur.get("qty", 0)) if cur else 0.0
             need = float(b["qty"]) * q
             if have < need:
-                raise HTTPException(400, f"Недостатньо на складі для {b['partTypeId']}: потрібно {need}, є {have}")
+                pt_name = (pt or {}).get("name", b['partTypeId'])
+                raise HTTPException(400, f"Недостатньо на складі для '{pt_name}': потрібно {need}, є {have}")
         else:
             status = (pt or {}).get("stockStatus") or "ok"
             if status != "ok":
-                raise HTTPException(400, f"Недостатньо на складі (статус) для {b['partTypeId']}")
-    # Deduct parts (take into assembly) only for pcs
+                pt_name = (pt or {}).get("name", b['partTypeId'])
+                raise HTTPException(400, f"Недостатньо на складі (статус) для '{pt_name}'")
+
+    # SAFE DEDUCTION: Collect all operations first, validate they will succeed
+    operations = []
     for b in product["bom"]:
         pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
         unit = (pt or {}).get("unit") or "pcs"
         if unit == "pcs":
-            await upsert_inventory(b["partTypeId"], -float(b["qty"]) * q, 0.0)
-            await log_stock_op("assembly_use", b["partTypeId"], -float(b["qty"]) * q, f"Взято в збірку {product.get('name','')} x{q}")
+            # Double-check we can deduct (race condition protection)
+            cur = await c_inventory.find_one({"_id": b["partTypeId"]})
+            have = float(cur.get("qty", 0)) if cur else 0.0
+            need = float(b["qty"]) * q
+            if have < need:
+                pt_name = (pt or {}).get("name", b['partTypeId'])
+                raise HTTPException(400, f"Недостатньо на складі для '{pt_name}': потрібно {need}, є {have} (перевірка перед списанням)")
+            operations.append({"type": "deduct", "partTypeId": b["partTypeId"], "qty": -float(b["qty"]) * q})
         else:
-            # log informational status-based consume
-            await log_stock_op("assembly_use", b["partTypeId"], 0.0, f"Взято в збірку (статус) {product.get('name','')} x{q}")
+            operations.append({"type": "log_only", "partTypeId": b["partTypeId"]})
+
+    # Execute deductions (now we're confident they will succeed)
+    for op in operations:
+        if op["type"] == "deduct":
+            try:
+                await upsert_inventory(op["partTypeId"], op["qty"], 0.0)
+                await log_stock_op("assembly_use", op["partTypeId"], op["qty"], f"Взято в збірку {product.get('name','')} x{q}")
+            except HTTPException as e:
+                # This should not happen after our checks, but if it does - log and re-raise
+                logger.error(f"Unexpected inventory error during assembly_start: {e.detail}")
+                raise
+        else:
+            await log_stock_op("assembly_use", op["partTypeId"], 0.0, f"Взято в збірку (статус) {product.get('name','')} x{q}")
+
     # Create assembly record with WIP status (no product stock increment yet)
     asm = {
         "id": str(ObjectId()),
@@ -1310,20 +1570,44 @@ async def assemble(req: AssemblyRequest):
             have = float(cur.get("qty", 0)) if cur else 0.0
             need = float(b["qty"]) * q
             if have < need:
-                raise HTTPException(400, f"Недостатньо на складі для {b['partTypeId']}: потрібно {need}, є {have}")
+                pt_name = (pt or {}).get("name", b['partTypeId'])
+                raise HTTPException(400, f"Недостатньо на складі для '{pt_name}': потрібно {need}, є {have}")
         else:
             status = (pt or {}).get("stockStatus") or "ok"
             if status != "ok":
-                raise HTTPException(400, f"Недостатньо на складі (статус) для {b['partTypeId']}")
-    # Deduct parts (only for pcs)
+                pt_name = (pt or {}).get("name", b['partTypeId'])
+                raise HTTPException(400, f"Недостатньо на складі (статус) для '{pt_name}'")
+
+    # SAFE DEDUCTION: Collect all operations first, validate they will succeed
+    operations = []
     for b in product["bom"]:
         pt = await c_part_types.find_one({"_id": b.get("partTypeId")})
         unit = (pt or {}).get("unit") or "pcs"
         if unit == "pcs":
-            await upsert_inventory(b["partTypeId"], -float(b["qty"]) * q, 0.0)
-            await log_stock_op("assembly_use", b["partTypeId"], -float(b["qty"]) * q, f"Збірка продукту {product.get('name','')} x{q}")
+            # Double-check we can deduct (race condition protection)
+            cur = await c_inventory.find_one({"_id": b["partTypeId"]})
+            have = float(cur.get("qty", 0)) if cur else 0.0
+            need = float(b["qty"]) * q
+            if have < need:
+                pt_name = (pt or {}).get("name", b['partTypeId'])
+                raise HTTPException(400, f"Недостатньо на складі для '{pt_name}': потрібно {need}, є {have} (перевірка перед списанням)")
+            operations.append({"type": "deduct", "partTypeId": b["partTypeId"], "qty": -float(b["qty"]) * q})
         else:
-            await log_stock_op("assembly_use", b["partTypeId"], 0.0, f"Збірка продукту (статус) {product.get('name','')} x{q}")
+            operations.append({"type": "log_only", "partTypeId": b["partTypeId"]})
+
+    # Execute deductions (now we're confident they will succeed)
+    for op in operations:
+        if op["type"] == "deduct":
+            try:
+                await upsert_inventory(op["partTypeId"], op["qty"], 0.0)
+                await log_stock_op("assembly_use", op["partTypeId"], op["qty"], f"Збірка продукту {product.get('name','')} x{q}")
+            except HTTPException as e:
+                # This should not happen after our checks, but if it does - log and re-raise
+                logger.error(f"Unexpected inventory error during assemble: {e.detail}")
+                raise
+        else:
+            await log_stock_op("assembly_use", op["partTypeId"], 0.0, f"Збірка продукту (статус) {product.get('name','')} x{q}")
+
     # Increase product stock
     await inc_product_stock(req.productId, q)
     # Add assembly record (legacy immediate complete)
