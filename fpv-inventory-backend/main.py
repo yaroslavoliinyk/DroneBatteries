@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import UpdateOne
 from db import (
     db,
     c_balance,
@@ -159,9 +160,12 @@ async def rebuild_inventory_and_stock() -> None:
     - Assemblies deduct parts from inventory and increase product stock
     - Allocated sales decrease product stock (unallocated sales should not affect stock)
 
-    IMPORTANT: This function is now ATOMIC - it calculates everything in memory first,
-    validates the results, and only then writes to the database. If validation fails,
-    the original data is preserved.
+    IMPORTANT SAFETY FEATURES:
+    1. ATOMIC: Calculates everything in memory first, validates, then writes to DB
+    2. NO DELETE_ALL: Never uses delete_many({}) - we update existing records and set
+       zero for records not in calculation, but never delete them completely
+    3. DATA PRESERVATION: If validation fails, original data is preserved
+    4. BULK OPERATIONS: Uses efficient bulk_write for better performance and atomicity
     """
     # Step 1: Calculate everything IN MEMORY first
     # inventory_calc: {part_type_id: {"qty": float, "avgCost": float}}
@@ -267,26 +271,70 @@ async def rebuild_inventory_and_stock() -> None:
         if product_stock_calc[product_id] < 0:
             product_stock_calc[product_id] = 0
 
-    # Step 4: NOW we can safely write to database (atomic-like operation)
-    # Delete and rewrite in quick succession
-    await c_inventory.delete_many({})
-    await c_product_stock.delete_many({})
+    # Step 4: SAFELY write to database WITHOUT delete_all
+    # Strategy: Update existing records, set zero for records not in calculation, create new ones
+    # This is MUCH safer than delete_all - we never lose data, only update it
 
-    # Write calculated inventory
+    # Get all existing IDs from database (for inventory and product_stock)
+    existing_inventory_ids = {doc["_id"] async for doc in c_inventory.find({}, {"_id": 1})}
+    existing_product_stock_ids = {doc["_id"] async for doc in c_product_stock.find({}, {"_id": 1})}
+
+    # Calculate which IDs should be set to zero (exist in DB but not in calculation)
+    inventory_ids_to_zero = existing_inventory_ids - set(inventory_calc.keys())
+    product_stock_ids_to_zero = existing_product_stock_ids - set(product_stock_calc.keys())
+
+    # Use bulk operations for efficiency and atomicity
+    # Prepare bulk operations for inventory
+    inventory_ops = []
+    # Update/create all calculated inventory
     for part_type_id, data in inventory_calc.items():
-        await c_inventory.update_one(
-            {"_id": part_type_id},
-            {"$set": {"id": part_type_id, "qty": data["qty"], "avgCost": data["avgCost"]}},
-            upsert=True,
+        inventory_ops.append(
+            UpdateOne(
+                {"_id": part_type_id},
+                {"$set": {"id": part_type_id, "qty": data["qty"], "avgCost": data["avgCost"]}},
+                upsert=True
+            )
+        )
+    # Set zero for records not in calculation (but keep them in DB for safety)
+    for part_type_id in inventory_ids_to_zero:
+        inventory_ops.append(
+            UpdateOne(
+                {"_id": part_type_id},
+                {"$set": {"qty": 0.0, "avgCost": 0.0}}
+            )
         )
 
-    # Write calculated product stock
+    # Prepare bulk operations for product stock
+    product_stock_ops = []
+    # Update/create all calculated product stock
     for product_id, qty in product_stock_calc.items():
-        await c_product_stock.update_one(
-            {"_id": product_id},
-            {"$set": {"id": product_id, "qty": qty}},
-            upsert=True,
+        product_stock_ops.append(
+            UpdateOne(
+                {"_id": product_id},
+                {"$set": {"id": product_id, "qty": qty}},
+                upsert=True
+            )
         )
+    # Set zero for records not in calculation (but keep them in DB for safety)
+    for product_id in product_stock_ids_to_zero:
+        product_stock_ops.append(
+            UpdateOne(
+                {"_id": product_id},
+                {"$set": {"qty": 0}}
+            )
+        )
+
+    # Execute bulk operations (more efficient and safer than individual updates)
+    if inventory_ops:
+        await c_inventory.bulk_write(inventory_ops, ordered=False)
+    if product_stock_ops:
+        await c_product_stock.bulk_write(product_stock_ops, ordered=False)
+
+    # Log what was zeroed (for debugging/audit)
+    if inventory_ids_to_zero:
+        logger.info(f"Rebuild: Set {len(inventory_ids_to_zero)} inventory records to zero (not in calculation)")
+    if product_stock_ids_to_zero:
+        logger.info(f"Rebuild: Set {len(product_stock_ids_to_zero)} product stock records to zero (not in calculation)")
 
 async def inc_product_stock(product_id: str, qty: int) -> None:
     cur = await c_product_stock.find_one({"_id": product_id})
@@ -927,10 +975,18 @@ async def update_purchase(purchase_id: str, body: UpdatePurchaseRequest):
 
     await c_purchases.update_one({"_id": purchase_id}, {"$set": patch})
 
-    # Only rebuild if something inventory-affecting actually changed
-    if needs_rebuild:
-        logger.info(f"Rebuilding inventory due to purchase {purchase_id} changes")
+    # Only rebuild if:
+    # 1. Something inventory-affecting actually changed (items, costs, delivered status, isService)
+    # 2. AND the purchase is/was delivered (undelivered purchases don't affect inventory)
+    was_delivered = p.get("delivered", False)
+    is_now_delivered = patch.get("delivered", was_delivered)
+    purchase_affects_inventory = was_delivered or is_now_delivered
+
+    if needs_rebuild and purchase_affects_inventory:
+        logger.info(f"Rebuilding inventory due to purchase {purchase_id} changes (delivered: {is_now_delivered})")
         await rebuild_inventory_and_stock()
+    elif needs_rebuild:
+        logger.debug(f"Skipping rebuild for purchase {purchase_id} - changes don't affect inventory (not delivered)")
     else:
         logger.debug(f"Skipping rebuild for purchase {purchase_id} - no inventory-affecting changes")
 
@@ -957,6 +1013,12 @@ async def delete_purchase(purchase_id: str):
     p = await c_purchases.find_one({"_id": purchase_id})
     if not p:
         raise HTTPException(404, "Purchase not found")
+
+    # Check if this purchase affects inventory (only delivered non-service purchases do)
+    was_delivered = p.get("delivered", False)
+    is_service = p.get("isService", False)
+    affects_inventory = was_delivered and not is_service
+
     await c_purchases.delete_one({"_id": purchase_id})
     # Also remove linked balance entries if any
     await c_balance.delete_many({"refPurchaseId": purchase_id})
@@ -972,7 +1034,15 @@ async def delete_purchase(purchase_id: str):
     except Exception:
         # best-effort cleanup; ignore errors
         pass
-    await rebuild_inventory_and_stock()
+
+    # Only rebuild inventory if this purchase actually affected inventory
+    # (i.e., it was delivered and not a service)
+    if affects_inventory:
+        logger.info(f"Rebuilding inventory after deleting delivered purchase {purchase_id}")
+        await rebuild_inventory_and_stock()
+    else:
+        logger.debug(f"Skipping rebuild after deleting purchase {purchase_id} (not delivered or is service)")
+
     return {"ok": True}
 
 @app.get("/purchases/archived")
@@ -1283,9 +1353,17 @@ async def toggle_purchase_service(purchase_id: str, body: ToggleServiceRequest):
     p = await c_purchases.find_one({"_id": purchase_id})
     if not p:
         raise HTTPException(404, "Purchase not found")
+
+    # Only rebuild if purchase was delivered (undelivered purchases don't affect inventory)
+    was_delivered = p.get("delivered", False)
     await c_purchases.update_one({"_id": purchase_id}, {"$set": {"isService": bool(body.isService)}})
-    # Rebuild inventory/stock to ensure consistency
-    await rebuild_inventory_and_stock()
+
+    if was_delivered:
+        logger.info(f"Rebuilding inventory after toggling service status for delivered purchase {purchase_id}")
+        await rebuild_inventory_and_stock()
+    else:
+        logger.debug(f"Skipping rebuild after toggling service status for purchase {purchase_id} (not delivered)")
+
     return {"ok": True, "isService": bool(body.isService)}
 
 # Inventory

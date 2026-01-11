@@ -186,6 +186,9 @@ docker compose logs frontend
 | `FRONTEND_ORIGIN` | Frontend URL for CORS | `http://localhost:3000` |
 | `VITE_API_BASE` | Backend API URL | `http://localhost:8000` |
 
+Atlas MONGO: y.oliyn7@gmail.com
+
 ## 📄 License
 
 This project is for internal use. All rights reserved.
+
